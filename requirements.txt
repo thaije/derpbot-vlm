@@ -1,4 +1,8 @@
-rclpy
+torch
+transformers>=4.40
+accelerate
+Pillow
 pyyaml
-pillow
-anthropic
+numpy
+opencv-python-headless
+rclpy

@@ -27,10 +27,9 @@ Camera (10 Hz) → [rate limiter 1 Hz] → VLM subprocess
 LiDAR → safety layer (stop if obstacle < 0.3 m, overrides cmd_vel)
 ```
 
-**VLM options (priority order):**
-1. Phi-3-Vision (4.2B, ~4–5 GB VRAM) — fully local, no API cost
-2. Claude claude-haiku-4-5-20251001 via API — faster prototyping
-3. LLaVA-1.5-7B Q4 — fallback
+**VLM (local-first):**
+1. Phi-3-Vision (4.2B, ~4–5 GB VRAM) — primary, fully local, no API cost
+2. LLaVA-1.5-7B Q4 — fallback if Phi-3 unavailable
 
 **Action → velocity mapping** (from `config/vlm_config.yaml`):
 
@@ -50,6 +49,12 @@ Each action runs for 1 s, then VLM re-queried.
 - Output: JSON `{"action": "forward|backward|left|right|stop", "reasoning": "...", "target_visible": bool}`
 
 **Termination:** agent polls `GET /mission` status. Sim ends on SUCCESS (proximity achieved) or TIME_LIMIT.
+
+**ROS 2 topics** (all namespaced `/derpbot_0/`):
+- Camera: `/derpbot_0/rgbd/image` (sensor_msgs/Image, BEST_EFFORT QoS)
+- LiDAR: `/derpbot_0/scan` (sensor_msgs/LaserScan, BEST_EFFORT QoS)
+- cmd_vel: `/derpbot_0/cmd_vel` (geometry_msgs/Twist)
+- Mission API: `GET http://localhost:7400/mission`
 
 **Repo structure:**
 ```
@@ -86,13 +91,15 @@ Anything in committed config/code is omitted. Only things a fresh agent would re
 
 ## How to run
 
-Not yet implemented. Planned:
 ```bash
-# Start sim + agent (planned)
-./scripts/start_stack.sh --scenario easy --seed 42
+# Start sim + agent
+./scripts/start_stack.sh config/scenarios/basement_find/easy.yaml --seed 42 --headless
 
-# Manual agent only (planned)
+# Manual agent only (requires running sim)
 python3.12 agent/agent_node.py
+
+# Run tests
+python3.12 -m pytest tests/
 ```
 
 Results: `~/Projects/robot-sandbox/results/` via `validate_submission.py`.

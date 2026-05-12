@@ -1,7 +1,14 @@
-model: claude-haiku-4-5-20251001
+model:
+  name: microsoft/Phi-3-vision-128k-instruct
+  type: local
+  device: cuda
+  torch_dtype: float16
+
 inference:
   rate_hz: 1.0
   max_retries: 3
+  timeout_s: 10.0
+
 actions:
   forward:
     linear_x: 0.3
@@ -18,6 +25,17 @@ actions:
   stop:
     linear_x: 0.0
     angular_z: 0.0
+
 safety:
   min_range_m: 0.3
   forward_arc_deg: 30
+
+ros:
+  camera_topic: /derpbot_0/rgbd/image
+  depth_topic: /derpbot_0/rgbd/depth_image
+  lidar_topic: /derpbot_0/scan
+  odom_topic: /derpbot_0/odom
+  cmd_vel_topic: /derpbot_0/cmd_vel
+  detection_topic: /derpbot_0/detections
+  mission_url: http://localhost:7400/mission
+  use_sim_time: true

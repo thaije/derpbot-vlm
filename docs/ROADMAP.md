@@ -16,8 +16,8 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Claude API prototype · [#1](https://github.com/thaije/derpbot-vlm/issues/1)
-Get Claude API version working first — fastest to iterate, no local model setup. Agent polls `/mission`, sends camera frame, receives action JSON.
+### 1. Local VLM prototype (Phi-3-Vision) · [#1](https://github.com/thaije/derpbot-vlm/issues/1)
+Camera → Phi-3-Vision → action JSON → cmd_vel. No API dependency, zero inference cost.
 
 ### 2. Safety layer · [#2](https://github.com/thaije/derpbot-vlm/issues/2)
 LiDAR subscriber in separate thread. Min range < 0.3 m in forward arc → override cmd_vel to zero. Must run independently of VLM.
@@ -31,9 +31,8 @@ Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0.
 
 Titles only. Expand when a task is promoted to "Next".
 
-- **Phi-3-Vision local model** — switch from Claude API to local VLM for scored runs (no API dependency).
-- **Benchmark submission** — `validate_submission.py` + result JSONs.
-- **Medium/hard tier scenarios** — once easy ≥ 3/5.
+- **Benchmark submission** · [#4](https://github.com/thaije/derpbot-vlm/issues/4) — `validate_submission.py` + result JSONs.
+- **Medium/hard tier scenarios** · [#5](https://github.com/thaije/derpbot-vlm/issues/5) — once easy ≥ 3/5.
 
 ---
 

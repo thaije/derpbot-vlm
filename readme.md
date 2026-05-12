@@ -41,12 +41,9 @@ uv pip install -r requirements.txt
 
 ## Run
 
-_(Agent not yet implemented — see roadmap for development sequence)_
-
-Planned:
 ```bash
 # Launch sim + agent
-./scripts/start_stack.sh --scenario easy --seed 42
+./scripts/start_stack.sh config/scenarios/basement_find/easy.yaml --seed 42 --headless
 
 # Or agent only (requires running sim)
 python3.12 agent/agent_node.py
@@ -55,14 +52,14 @@ python3.12 agent/agent_node.py
 ## Configuration
 
 All tunable parameters live in [`config/vlm_config.yaml`](config/vlm_config.yaml):
-- Model selection (Claude API / Phi-3-Vision / LLaVA)
+- Model selection (Phi-3-Vision / LLaVA)
 - Inference rate, max retries
 - Action → velocity mappings
 - Safety layer thresholds
 
 ## Safety layer
 
-The safety layer runs independently of the VLM loop. If the forward LiDAR arc (±30°) detects an obstacle closer than 0.3 m, it publishes zero velocity on `/cmd_vel`, overriding any VLM command. The VLM is never involved in safety decisions.
+The safety layer runs independently of the VLM loop. If the forward LiDAR arc (±30°) detects an obstacle closer than 0.3 m, it publishes zero velocity on `/derpbot_0/cmd_vel`, overriding any VLM command. The VLM is never involved in safety decisions.
 
 ## Tests
 
