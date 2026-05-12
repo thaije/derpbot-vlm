@@ -1,0 +1,23 @@
+model: claude-haiku-4-5-20251001
+inference:
+  rate_hz: 1.0
+  max_retries: 3
+actions:
+  forward:
+    linear_x: 0.3
+    angular_z: 0.0
+  backward:
+    linear_x: -0.2
+    angular_z: 0.0
+  left:
+    linear_x: 0.0
+    angular_z: 0.5
+  right:
+    linear_x: 0.0
+    angular_z: -0.5
+  stop:
+    linear_x: 0.0
+    angular_z: 0.0
+safety:
+  min_range_m: 0.3
+  forward_arc_deg: 30

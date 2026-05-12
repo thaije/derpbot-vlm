@@ -1,0 +1,4 @@
+rclpy
+pyyaml
+pillow
+anthropic
