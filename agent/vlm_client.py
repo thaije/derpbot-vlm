@@ -12,9 +12,9 @@ SYSTEM_PROMPT = (
     "You are a robot navigation agent. "
     "You receive a camera image and the last few actions you took. "
     "You must decide the next action to navigate toward your mission target. "
-    'Respond with JSON: {"action": "forward|backward|left|right|stop", '
-    '"reasoning": "brief explanation", "target_visible": true|false}. '
-    "Only output valid JSON, no other text."
+    'Respond ONLY with a JSON object using double quotes: {"action": "forward", "reasoning": "brief explanation", "target_visible": true}. '
+    "Valid actions: forward, backward, left, right, stop. "
+    "Do not add any text before or after the JSON."
 )
 
 
@@ -26,16 +26,31 @@ class VLMResult:
 
 
 def _parse_response(text: str) -> Optional[VLMResult]:
-    json_match = re.search(r"\{[^{}]+\}", text)
+    json_match = re.search(r"\{.*?\}", text, re.DOTALL)
     if not json_match:
-        logger.warning("No JSON object found in VLM response: %s", text[:200])
-        return None
+        partial = re.search(r'\{[^}]*', text)
+        if partial:
+            candidate = partial.group() + '}'
+        else:
+            logger.warning("No JSON object found in VLM response: %s", text[:200])
+            return None
+    else:
+        candidate = json_match.group()
 
+    raw_json = candidate
     try:
-        data = json.loads(json_match.group())
+        data = json.loads(raw_json)
     except json.JSONDecodeError:
-        logger.warning("Failed to parse JSON from VLM: %s", json_match.group()[:200])
-        return None
+        fixed = raw_json.replace("'", '"')
+        fixed = re.sub(r'"\.\s*"', '", "', fixed)
+        fixed = re.sub(r'"\s*\.\s*\}', '"}', fixed)
+        fixed = fixed.replace("True", "true").replace("False", "false")
+        fixed = re.sub(r',\s*\}', '}', fixed)
+        try:
+            data = json.loads(fixed)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse JSON from VLM: %s", raw_json[:200])
+            return None
 
     action = data.get("action", "stop").lower().strip()
     if action not in VALID_ACTIONS:
@@ -43,26 +58,32 @@ def _parse_response(text: str) -> Optional[VLMResult]:
         action = "stop"
 
     reasoning = str(data.get("reasoning", ""))
-    target_visible = bool(data.get("target_visible", False))
+    tv = data.get("target_visible", False)
+    if isinstance(tv, str):
+        target_visible = tv.lower() in ("true", "1", "yes")
+    else:
+        target_visible = bool(tv)
 
     return VLMResult(action=action, reasoning=reasoning, target_visible=target_visible)
 
 
-def _inference_worker(model_name: str, device: str, dtype_str: str, request_queue, result_queue):
-    import multiprocessing
+def _inference_worker(model_name: str, device: str, dtype_str: str, request_queue, result_queue, ready_event):
+    import os
     import torch
     import transformers
-    from PIL import Image
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     dtype = getattr(torch, dtype_str, torch.float16)
 
     logger.info("Loading model %s on %s (%s)...", model_name, device, dtype_str)
-    processor = transformers.AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-    model = transformers.AutoModelForCausalLM.from_pretrained(
-        model_name, trust_remote_code=True, torch_dtype=dtype
+    processor = transformers.AutoProcessor.from_pretrained(model_name)
+    model = transformers.AutoModelForVision2Seq.from_pretrained(
+        model_name, torch_dtype=dtype
     ).to(device)
     model.eval()
     logger.info("Model loaded successfully")
+    ready_event.set()
 
     while True:
         item = request_queue.get()
@@ -73,22 +94,25 @@ def _inference_worker(model_name: str, device: str, dtype_str: str, request_queu
         try:
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"<|image_1|>\n{prompt}"},
+                {"role": "user", "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": prompt},
+                ]},
             ]
-            prompt_text = processor.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            inputs = processor(prompt_text, [image], return_tensors="pt").to(device)
+            inputs = processor.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=True,
+                return_dict=True, return_tensors="pt"
+            ).to(device)
 
             with torch.no_grad():
                 output_ids = model.generate(
                     **inputs,
-                    max_new_tokens=256,
+                    max_new_tokens=128,
                     temperature=0.3,
                     do_sample=True,
                 )
             generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
-            response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            response = processor.decode(generated_ids[0], skip_special_tokens=True)
             result_queue.put(response)
         except Exception as e:
             logger.error("Inference error: %s", e)
@@ -105,24 +129,28 @@ class VLMClient:
 
         inf_cfg = config["inference"]
         self.max_retries = inf_cfg.get("max_retries", 3)
-        self.timeout = inf_cfg.get("timeout_s", 10.0)
+        self.timeout = inf_cfg.get("timeout_s", 30.0)
 
-        self._request_queue: Optional[multiprocessing.Queue] = None
-        self._result_queue: Optional[multiprocessing.Queue] = None
-        self._process: Optional[multiprocessing.Process] = None
+        self._request_queue = None
+        self._result_queue = None
+        self._process = None
 
-    def start(self):
+    def start(self, ready_timeout: float = 300.0):
         import multiprocessing
         ctx = multiprocessing.get_context("spawn")
         self._request_queue = ctx.Queue(maxsize=1)
         self._result_queue = ctx.Queue(maxsize=1)
+        self._ready_event = ctx.Event()
         self._process = ctx.Process(
             target=_inference_worker,
-            args=(self.model_name, self.device, self.dtype_str, self._request_queue, self._result_queue),
+            args=(self.model_name, self.device, self.dtype_str, self._request_queue, self._result_queue, self._ready_event),
             daemon=True,
         )
         self._process.start()
-        logger.info("VLM subprocess started (pid=%d)", self._process.pid)
+        logger.info("VLM subprocess started (pid=%d), waiting for model load...", self._process.pid)
+        if not self._ready_event.wait(timeout=ready_timeout):
+            raise RuntimeError(f"VLM model failed to load within {ready_timeout}s")
+        logger.info("VLM model ready")
 
     def stop(self):
         if self._process and self._process.is_alive():

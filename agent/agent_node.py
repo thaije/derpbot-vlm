@@ -6,7 +6,7 @@ import signal
 import sys
 import time
 import urllib.request
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 
 import yaml
 from PIL import Image
@@ -48,7 +48,7 @@ class AgentNode:
         from sensor_msgs.msg import Image as RosImage
         from cv_bridge import CvBridge
 
-        rclpy.init(args=[], context=rclpy.default_context(self._get_rcl_args()))
+        rclpy.init(args=[])
         self.config = config
 
         self.node = Node(
@@ -63,7 +63,7 @@ class AgentNode:
 
         self.bridge = CvBridge()
         self._latest_image = None
-        self._image_lock = threading.Lock()
+        self._image_lock = Lock()
 
         qos = QoSProfile(
             depth=5,
@@ -90,10 +90,6 @@ class AgentNode:
         self._mission = None
         self._done_event = Event()
         self._action_history: list[str] = []
-
-    @staticmethod
-    def _get_rcl_args():
-        return []
 
     @staticmethod
     def _declare_sim_time_param():

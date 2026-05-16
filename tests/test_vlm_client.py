@@ -55,3 +55,22 @@ class TestParseResponse:
         result = _parse_response(text)
         assert result is not None
         assert result.target_visible is False
+
+    def test_single_quotes_fixed(self):
+        text = "{'action': 'forward', 'reasoning': 'test', 'target_visible': true}"
+        result = _parse_response(text)
+        assert result is not None
+        assert result.action == "forward"
+        assert result.target_visible is True
+
+    def test_target_visible_string_true(self):
+        text = '{"action": "left", "reasoning": "test", "target_visible": "true"}'
+        result = _parse_response(text)
+        assert result is not None
+        assert result.target_visible is True
+
+    def test_target_visible_string_false(self):
+        text = '{"action": "stop", "reasoning": "test", "target_visible": "false"}'
+        result = _parse_response(text)
+        assert result is not None
+        assert result.target_visible is False

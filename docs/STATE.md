@@ -28,8 +28,8 @@ LiDAR → safety layer (stop if obstacle < 0.3 m, overrides cmd_vel)
 ```
 
 **VLM (local-first):**
-1. Phi-3-Vision (4.2B, ~4–5 GB VRAM) — primary, fully local, no API cost
-2. LLaVA-1.5-7B Q4 — fallback if Phi-3 unavailable
+1. SmolVLM-Instruct (2.2B, ~4.6 GB VRAM) — primary, fully local, no API cost
+2. Phi-3-Vision (4.2B) — requires >8 GB VRAM or 4-bit quant + compatible transformers
 
 **Action → velocity mapping** (from `config/vlm_config.yaml`):
 

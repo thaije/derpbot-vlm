@@ -1,5 +1,5 @@
 model:
-  name: microsoft/Phi-3-vision-128k-instruct
+  name: HuggingFaceTB/SmolVLM-Instruct
   type: local
   device: cuda
   torch_dtype: float16
@@ -7,7 +7,7 @@ model:
 inference:
   rate_hz: 1.0
   max_retries: 3
-  timeout_s: 10.0
+  timeout_s: 30.0
 
 actions:
   forward:

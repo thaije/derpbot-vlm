@@ -25,7 +25,7 @@ Each action runs for 1 s, then VLM is re-queried.
 ## Prerequisites
 
 - Ubuntu 24.04, ROS 2 Jazzy
-- GPU with ≥ 5 GB VRAM (for Phi-3-Vision local inference)
+- GPU with ≥ 5 GB VRAM (for SmolVLM-Instruct local inference)
 - **Python 3.12** — `python3` may resolve to a different interpreter
 - **uv** — `pip install uv` or [docs.astral.sh/uv](https://docs.astral.sh/uv)
 
@@ -52,7 +52,7 @@ python3.12 agent/agent_node.py
 ## Configuration
 
 All tunable parameters live in [`config/vlm_config.yaml`](config/vlm_config.yaml):
-- Model selection (Phi-3-Vision / LLaVA)
+- Model selection (SmolVLM / Phi-3-Vision)
 - Inference rate, max retries
 - Action → velocity mappings
 - Safety layer thresholds
