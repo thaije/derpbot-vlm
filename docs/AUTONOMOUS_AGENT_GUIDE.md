@@ -10,7 +10,7 @@ You will be placed in an unknown indoor environment. Before each run you receive
 
 1. **explore_detect** — Find and report all target objects within the time limit. Your agent explores the environment, detects instances of every target type, and reports detections.
 
-2. **proximity** — Navigate to within a radius of a single target object. No detection reporting required — success is purely based on ground-truth robot position reaching the proximity radius.
+2. **proximity** — Navigate to within a radius of a single target object and report a valid detection for it. Proximity alone is not enough — you must also confirm the target via a detection message (see §3).
 
 Scenarios come in multiple **difficulty tiers** and **world templates**. The environment may challenge your agent in various ways — expect conditions to differ between tiers and runs. Object placement and spawn position are **randomised each run** unless a seed is fixed. Doors are passable or permanently locked; no unlocking or interaction is required.
 
@@ -18,7 +18,7 @@ Scenarios come in multiple **difficulty tiers** and **world templates**. The env
 
 **Explore-detect success** = all required instances detected before the time limit. Thorough exploration of the full environment earns bonus points regardless of outcome.
 
-**Proximity success** = robot ground-truth position enters the proximity radius of the target object before the time limit.
+**Proximity success** = robot enters the proximity radius of the target object AND a true-positive detection of the target is confirmed. Both conditions must be met.
 
 ---
 
@@ -42,16 +42,18 @@ Grade thresholds: **S** ≥ 95 · **A** ≥ 85 · **B** ≥ 70 · **C** ≥ 55 �
 
 ### Proximity-goal scenarios
 
-Proximity scenarios have a different scoring structure — success is binary (reached / not reached), and detection metrics are replaced by navigation efficiency.
+Proximity scenarios require both **navigation** (reaching the target) and **perception** (detecting the target). Success is not possible through random driving or standing still.
 
 | Category | Weight | What it measures |
 |---|---|---|
-| **Success** | 0.30 | Binary: 100 if robot reaches within `proximity_radius` of target, 0 if not |
+| **Success** | 0.30 | Binary: 100 if robot reaches within `proximity_radius` of target AND reports a valid detection, 0 otherwise |
 | **Time** | 0.25 | Time to reach target vs par (par → B grade) |
 | **Safety** | 0.20 | Collisions and near-misses (same as explore_detect) |
 | **Efficiency** | 0.25 | `straight_line_distance / path_length` (directness of path; lower is better, capped at 100) |
 
-Raw metrics for proximity scenarios include `proximity_reached` (bool), `min_distance_to_target`, `proximity_path_length`, and `straight_line_distance`.
+You must publish detections on `/derpbot_0/detections` (see §3) just like in explore-detect scenarios. The detection must be a true positive (correct type, within 1.5 m of a real instance, line-of-sight clear) for the target object type specified in the mission brief.
+
+Raw metrics for proximity scenarios include `proximity_reached` (bool), `found_ratio` (detection recall for mission targets), `min_distance_to_target`, `proximity_path_length`, and `straight_line_distance`.
 
 | Tier | `completion_time_par` (s) | `path_length_par` (m) | `coverage_per_meter_par` |
 |---|---|---|---|
@@ -87,6 +89,7 @@ Ground robot (differential drive — currently the only supported model).
 | RGBD — intrinsics | `/derpbot_0/rgbd/camera_info` | 10 Hz | `sensor_msgs/CameraInfo` — required for 3-D back-projection |
 | RGBD — point cloud | `/derpbot_0/rgbd/points` | 10 Hz | `sensor_msgs/PointCloud2` — **off by default**, enable with `--enable-pointcloud` |
 | Odometry | `/derpbot_0/odom` | — | `nav_msgs/Odometry`, IMU-fused (EKF) — yaw drift corrected |
+| Bumper (contact) | `/derpbot_0/bumper_contact` | 10 Hz | `ros_gz_interfaces/msg/Contacts` — fires for **all** contacts including ground plane; filter ground-plane contacts to detect collisions |
 | Raw wheel odometry | `/derpbot_0/odom_raw` | — | `nav_msgs/Odometry`, raw wheel-encoder dead-reckoning (for custom sensor fusion) |
 
 ### Control & TF
@@ -199,16 +202,17 @@ For **proximity-goal** scenarios, the response includes:
 {
   "scenario": "basement_find_easy",
   "goal_type": "proximity",
-  "goal": "Find the sewer pipe and navigate within 2 metres of it before the time limit expires.",
-  "target_object": "sewer_pipe",
-  "target_description": "find the sewer pipe and navigate within 2m",
-  "proximity_radius": 2.0,
+  "goal": "Find the drink can, navigate within 1 metre of it, and report a detection via /derpbot_0/detections before the time limit expires.",
+  "target_object": "drink_can",
+  "target_description": "find the drink can, navigate within 1m, and detect it",
+  "proximity_radius": 1.0,
+  "requires_detection": true,
   "time_limit_seconds": 300,
   "targets": [
-    {"type": "sewer_pipe", "count": 1, "count_exact": true}
+    {"type": "drink_can", "count": 1, "count_exact": true}
   ],
   "status": "running",
-  "description": "Navigate within 2m of the sewer pipe within 300s. Status: running."
+  "description": "Navigate within 1m of the drink can AND report a valid detection for it within 300s. Status: running."
 }
 ```
 
@@ -237,9 +241,10 @@ A mission brief is also printed to stdout at scenario start and again just befor
 **Proximity-goal scenarios:**
 
 1. **Receive the mission** — fetch the mission description to learn the target object type and proximity radius.
-2. **Navigate** to the target — no detection reporting required. The system tracks your ground-truth position via odometry.
-3. **Navigate safely** — collisions and near-misses reduce your Safety score.
-4. The episode ends automatically when you enter the proximity radius (success) or the time limit expires.
+2. **Navigate** to the target — use sensors and odometry to find and approach the target.
+3. **Detect the target** — publish a `vision_msgs/Detection2DArray` on `/derpbot_0/detections` with the target object type and map-frame position (see §3). The detection must be a true positive (correct type, within 1.5 m, clear line of sight).
+4. **Navigate safely** — collisions and near-misses reduce your Safety score.
+5. The episode ends automatically when you enter the proximity radius AND your detection is confirmed, or the time limit expires.
 
 ---
 
@@ -249,6 +254,7 @@ A mission brief is also printed to stdout at scenario start and again just befor
 - Use `--seed N` to freeze the layout while iterating on your algorithm.
 - `scripts/robot_control.py` — manual drive / camera snapshot (dev/cheat tool).
 - `scripts/world_state.py` — PNG map + object ground-truth positions (dev/cheat tool).
+- `scripts/detection_viz.py` — overlay submission_log (TP/FP/FP_LOS) on floor plan PNG (post-run analysis).
 
 ---
 
