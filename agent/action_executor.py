@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from typing import Optional
 
 from geometry_msgs.msg import Twist
@@ -30,16 +31,13 @@ class ActionExecutor:
         with self._lock:
             self._current_twist = twist
 
-        rate = self.node.create_rate(10)
-        sim_clock = self.node.get_clock()
-        start = sim_clock.now().nanoseconds / 1e9
-        while sim_clock.now().nanoseconds / 1e9 - start < duration_s:
+        for _ in range(5):
             with self._lock:
                 if self._safety_override:
                     self.publisher.publish(Twist())
-                    break
+                    return
                 self.publisher.publish(self._current_twist)
-            rate.sleep()
+            time.sleep(0.05)
 
     def set_safety_override(self, active: bool):
         with self._lock:

@@ -1,8 +1,6 @@
 model:
-  name: HuggingFaceTB/SmolVLM-Instruct
-  type: local
-  device: cuda
-  torch_dtype: float16
+  name: gemma4:e2b
+  backend: ollama
 
 inference:
   rate_hz: 1.0

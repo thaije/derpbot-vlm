@@ -1,7 +1,4 @@
-torch
-torchvision
-transformers>=4.46,<4.49
-accelerate
+ollama
 Pillow
 pyyaml
 numpy<2

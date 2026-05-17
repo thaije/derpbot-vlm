@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import logging
 import re
@@ -9,12 +11,21 @@ logger = logging.getLogger(__name__)
 VALID_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 
 SYSTEM_PROMPT = (
-    "You are a robot navigation agent. "
-    "You receive a camera image and the last few actions you took. "
-    "You must decide the next action to navigate toward your mission target. "
-    'Respond ONLY with a JSON object using double quotes: {"action": "forward", "reasoning": "brief explanation", "target_visible": true}. '
-    "Valid actions: forward, backward, left, right, stop. "
-    "Do not add any text before or after the JSON."
+    "You navigate a mobile robot through indoor environments using camera images. "
+    "Your goal is to explore efficiently and find the mission target object. "
+    '\n\nRespond ONLY with JSON: {"action": "forward", "reasoning": "brief", "target_visible": false}'
+    "\n\nActions: forward (move ahead), backward (reverse), left (rotate left ~30deg), "
+    "right (rotate right ~30deg), stop (halt completely)."
+    "\n\nCRITICAL RULES:"
+    "\n- target_visible MUST be false unless you can CLEARLY see the named target object in the image."
+    "\n- Walls, doors, furniture, and other objects are NOT the target. Only set target_visible=true "
+    "when you see the specific target object named in the mission."
+    "\n- If you have been turning in one direction for several steps, turn the opposite direction next. "
+    "Alternate turning to explore the full environment."
+    "\n- Prioritize forward movement when the path ahead is clear. Only turn to avoid obstacles or "
+    "search new areas."
+    "\n- Do not repeat the same action many times in a row. Vary your actions."
+    "\n- Do not add any text before or after the JSON."
 )
 
 
@@ -26,6 +37,10 @@ class VLMResult:
 
 
 def _parse_response(text: str) -> Optional[VLMResult]:
+    # Strip markdown code fences (gemma4 wraps JSON in ```json ... ```)
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+
     json_match = re.search(r"\{.*?\}", text, re.DOTALL)
     if not json_match:
         partial = re.search(r'\{[^}]*', text)
@@ -67,115 +82,85 @@ def _parse_response(text: str) -> Optional[VLMResult]:
     return VLMResult(action=action, reasoning=reasoning, target_visible=target_visible)
 
 
-def _inference_worker(model_name: str, device: str, dtype_str: str, request_queue, result_queue, ready_event):
-    import os
-    import torch
-    import transformers
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
-    dtype = getattr(torch, dtype_str, torch.float16)
-
-    logger.info("Loading model %s on %s (%s)...", model_name, device, dtype_str)
-    processor = transformers.AutoProcessor.from_pretrained(model_name)
-    model = transformers.AutoModelForVision2Seq.from_pretrained(
-        model_name, torch_dtype=dtype
-    ).to(device)
-    model.eval()
-    logger.info("Model loaded successfully")
-    ready_event.set()
-
-    while True:
-        item = request_queue.get()
-        if item is None:
-            break
-
-        image, prompt = item
-        try:
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": prompt},
-                ]},
-            ]
-            inputs = processor.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=True,
-                return_dict=True, return_tensors="pt"
-            ).to(device)
-
-            with torch.no_grad():
-                output_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=128,
-                    temperature=0.3,
-                    do_sample=True,
-                )
-            generated_ids = output_ids[:, inputs.input_ids.shape[1]:]
-            response = processor.decode(generated_ids[0], skip_special_tokens=True)
-            result_queue.put(response)
-        except Exception as e:
-            logger.error("Inference error: %s", e)
-            result_queue.put(None)
+def _strip_thinking(text: str) -> str:
+    text = re.sub(r'<\|channel\|>thought.*?<\|channel\|>', '', text, flags=re.DOTALL)
+    text = re.sub(r'\u2768\u4f0d.*?\u2769', '', text, flags=re.DOTALL)
+    text = re.sub(r'<\|think\|>.*?<\|/think\|>', '', text, flags=re.DOTALL)
+    text = re.sub(r'```json\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+    return text.strip()
 
 
 class VLMClient:
     def __init__(self, config: dict):
-        self.config = config
         model_cfg = config["model"]
         self.model_name = model_cfg["name"]
-        self.device = model_cfg.get("device", "cuda")
-        self.dtype_str = model_cfg.get("torch_dtype", "float16")
 
         inf_cfg = config["inference"]
         self.max_retries = inf_cfg.get("max_retries", 3)
         self.timeout = inf_cfg.get("timeout_s", 30.0)
-
-        self._request_queue = None
-        self._result_queue = None
-        self._process = None
+        self._client = None
 
     def start(self, ready_timeout: float = 300.0):
-        import multiprocessing
-        ctx = multiprocessing.get_context("spawn")
-        self._request_queue = ctx.Queue(maxsize=1)
-        self._result_queue = ctx.Queue(maxsize=1)
-        self._ready_event = ctx.Event()
-        self._process = ctx.Process(
-            target=_inference_worker,
-            args=(self.model_name, self.device, self.dtype_str, self._request_queue, self._result_queue, self._ready_event),
-            daemon=True,
-        )
-        self._process.start()
-        logger.info("VLM subprocess started (pid=%d), waiting for model load...", self._process.pid)
-        if not self._ready_event.wait(timeout=ready_timeout):
-            raise RuntimeError(f"VLM model failed to load within {ready_timeout}s")
-        logger.info("VLM model ready")
+        from ollama import Client
+        self._client = Client()
+        logger.info("Pre-loading Ollama model %s...", self.model_name)
+        import time
+        t0 = time.time()
+        try:
+            self._client.chat(
+                model=self.model_name,
+                messages=[{"role": "user", "content": "ping"}],
+                keep_alive=-1,
+            )
+        except Exception as e:
+            logger.warning("Model pre-load attempt: %s (model may still be downloading)", e)
+        logger.info("Ollama model %s ready (%.1fs)", self.model_name, time.time() - t0)
 
     def stop(self):
-        if self._process and self._process.is_alive():
-            self._request_queue.put(None)
-            self._process.join(timeout=5)
-            if self._process.is_alive():
-                self._process.terminate()
-            logger.info("VLM subprocess stopped")
+        if self._client:
+            try:
+                self._client.chat(model=self.model_name, messages=[], keep_alive=0)
+            except Exception:
+                pass
+        logger.info("Ollama model unloaded")
 
     def query(self, image, prompt: str) -> Optional[VLMResult]:
-        if self._request_queue is None:
+        if self._client is None:
             raise RuntimeError("VLM client not started")
+
+        max_dim = 384
+        w, h = image.size
+        if max(w, h) > max_dim:
+            scale = max_dim / max(w, h)
+            image = image.resize((int(w * scale), int(h * scale)))
+
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=70)
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                self._request_queue.put((image, prompt), timeout=self.timeout)
-                raw = self._result_queue.get(timeout=self.timeout)
-                if raw is None:
-                    logger.warning("VLM returned None (attempt %d/%d)", attempt, self.max_retries)
+                response = self._client.chat(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt, "images": [img_b64]},
+                    ],
+                    options={"temperature": 0.3},
+                    stream=False,
+                    keep_alive=-1,
+                )
+                raw = response.message.content
+                if not raw:
+                    logger.warning("VLM returned empty (attempt %d/%d)", attempt, self.max_retries)
                     continue
 
+                raw = _strip_thinking(raw)
                 result = _parse_response(raw)
                 if result is not None:
                     return result
-                logger.warning("Failed to parse VLM response (attempt %d/%d)", attempt, self.max_retries)
+                logger.warning("Failed to parse VLM response (attempt %d/%d): %s", attempt, self.max_retries, raw[:100])
 
             except Exception as e:
                 logger.error("VLM query error (attempt %d/%d): %s", attempt, self.max_retries, e)

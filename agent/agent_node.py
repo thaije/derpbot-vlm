@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import signal
-import sys
 import time
 import urllib.request
 from threading import Event, Lock, Thread
@@ -45,7 +44,8 @@ class AgentNode:
         import rclpy
         from rclpy.node import Node
         from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-        from sensor_msgs.msg import Image as RosImage
+        from sensor_msgs.msg import Image as RosImage, LaserScan
+        from nav_msgs.msg import Odometry
         from cv_bridge import CvBridge
 
         rclpy.init(args=[])
@@ -64,6 +64,10 @@ class AgentNode:
         self.bridge = CvBridge()
         self._latest_image = None
         self._image_lock = Lock()
+        self._odom_x = 0.0
+        self._odom_y = 0.0
+        self._odom_yaw = 0.0
+        self._odom_lock = Lock()
 
         qos = QoSProfile(
             depth=5,
@@ -78,6 +82,13 @@ class AgentNode:
             qos,
         )
 
+        self.node.create_subscription(
+            Odometry,
+            ros_cfg["odom_topic"],
+            self._odom_callback,
+            qos,
+        )
+
         from agent.vlm_client import VLMClient
         from agent.action_executor import ActionExecutor
         from agent.safety_layer import SafetyLayer
@@ -87,9 +98,20 @@ class AgentNode:
         self.safety = SafetyLayer(self.node, config)
         self.safety.set_action_executor(self.executor)
 
+        self._detection_pub = None
+        self._detection_class = None
+        det_topic = ros_cfg.get("detection_topic")
+        if det_topic:
+            from vision_msgs.msg import Detection2DArray
+            self._detection_pub = self.node.create_publisher(
+                Detection2DArray, det_topic, 10
+            )
+            self._detection_class = Detection2DArray
+
         self._mission = None
         self._done_event = Event()
         self._action_history: list[str] = []
+        self._detection_counter = 0
 
     @staticmethod
     def _declare_sim_time_param():
@@ -105,22 +127,73 @@ class AgentNode:
         except Exception as e:
             logger.debug("Image callback error: %s", e)
 
+    def _odom_callback(self, msg):
+        with self._odom_lock:
+            self._odom_x = msg.pose.pose.position.x
+            self._odom_y = msg.pose.pose.position.y
+            orientation = msg.pose.pose.orientation
+            siny_cosp = 2.0 * (orientation.w * orientation.z + orientation.x * orientation.y)
+            cosy_cosp = 1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z)
+            self._odom_yaw = __import__('math').atan2(siny_cosp, cosy_cosp)
+
     def _get_latest_image(self):
         with self._image_lock:
             return self._latest_image
+
+    def _get_odom(self):
+        with self._odom_lock:
+            return self._odom_x, self._odom_y, self._odom_yaw
 
     def _build_prompt(self) -> str:
         mission = self._mission or {}
         goal = mission.get("goal", "Navigate to the target object.")
         target_desc = mission.get("target_description", mission.get("description", goal))
-        history = ", ".join(self._action_history[-3:]) if self._action_history else "none"
+        target_obj = mission.get("target_object", "the target")
+        history = ", ".join(self._action_history[-5:]) if self._action_history else "none"
+
+        odom_x, odom_y, odom_yaw = self._get_odom()
+        import math
+        heading = f"{math.degrees(odom_yaw):.0f}deg"
+
         return (
             f"Mission: {target_desc}\n"
-            f"Last 3 actions: [{history}]\n"
+            f"Target object: {target_obj}\n"
+            f"Robot position: ({odom_x:.2f}, {odom_y:.2f}) heading {heading}\n"
+            f"Last 5 actions: [{history}]\n"
             f"What do you do next? Respond with JSON: "
             f'{{"action": "forward|backward|left|right|stop", '
             f'"reasoning": "brief explanation", "target_visible": true|false}}'
         )
+
+    def _publish_detection(self, target_type: str):
+        if self._detection_pub is None:
+            return
+
+        from std_msgs.msg import Header
+        from vision_msgs.msg import Detection2D, ObjectHypothesisWithPose
+        from geometry_msgs.msg import Pose, Point
+
+        odom_x, odom_y, odom_yaw = self._get_odom()
+        self._detection_counter += 1
+
+        det = Detection2D()
+        det.header = Header()
+        det.header.frame_id = "map"
+        det.id = f"vlm_track_{self._detection_counter}"
+
+        hyp = ObjectHypothesisWithPose()
+        hyp.hypothesis.class_id = target_type
+        hyp.hypothesis.score = 0.8
+        hyp.pose.pose.position.x = float(odom_x)
+        hyp.pose.pose.position.y = float(odom_y)
+        det.results.append(hyp)
+
+        msg = self._detection_class()
+        msg.header = det.header
+        msg.detections.append(det)
+
+        self._detection_pub.publish(msg)
+        logger.info("Published detection: %s at (%.2f, %.2f)", target_type, odom_x, odom_y)
 
     def _check_mission_status(self) -> bool:
         url = self.config["ros"]["mission_url"]
@@ -184,6 +257,10 @@ class AgentNode:
                     )
                     self._action_history.append(result.action)
                     self.executor.execute(result.action, duration_s=tick_interval)
+
+                    if result.target_visible:
+                        target_obj = self._mission.get("target_object", "unknown")
+                        self._publish_detection(target_obj)
                 else:
                     logger.warning("No VLM result, stopping")
                     self.executor.stop()
