@@ -20,10 +20,13 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 cmd_vel persists after execute() returns; robot still collides despite LiDAR override. Need continuous cmd_vel publishing with safety interrupt. Blocks validation (#3).
 
 ### 2. VLM never finds/detects target · [#6](https://github.com/thaije/derpbot-vlm/issues/6)
-Robot explores 99% but never reaches drill (4.35m away) and never publishes a detection. Need better search strategy and detection triggering. Blocks validation (#3).
+LiDAR+VLM hybrid architecture explores 99.5% but VLM detection rate is ~4%. Min dist to target 1.88m, but detections count as FP (position mismatch). Need stronger VLM or better detection positioning. Blocks validation (#3).
 
-### 3. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by #6 and #7.
+### 3. Test with cloud VLM · [#8](https://github.com/thaije/derpbot-vlm/issues/8)
+Run hybrid agent with cloud VLM (GPT-4o, Claude, Gemini Pro) to confirm architecture is sound and detection bottleneck is gemma4:e2b capability. If detection rate jumps, we know the agent works — just need a better model.
+
+### 4. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
+Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by #6 and #8.
 
 ---
 
@@ -31,7 +34,7 @@ Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocke
 
 Titles only. Expand when a task is promoted to "Next".
 
-- **VLM tool calling** — Define `navigate()` and `report_detection()` as Ollama tools; model decides when to call each. Replaces `target_visible` boolean field with separate detection tool call. Lets VLM report detections independently of navigation actions. Depends on verifying gemma4:e2b tool calling support.
+- **VLM tool calling** — Define `navigate()` and `report_detection()` as Ollama tools; model decides when to call each. Replaces `target_visible` boolean field with separate detection tool call. Lets VLM report detections independently of navigation actions. Depends on #8 confirming VLM capability gap.
 - **Benchmark submission** · [#4](https://github.com/thaije/derpbot-vlm/issues/4) — `validate_submission.py` + result JSONs.
 - **Medium/hard tier scenarios** · [#5](https://github.com/thaije/derpbot-vlm/issues/5) — once easy ≥ 3/5.
 
