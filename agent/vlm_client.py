@@ -9,19 +9,15 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You navigate a mobile robot through indoor environments using camera images. "
-    "Your goal is to explore efficiently and find the mission target object. "
-    "\n\nActions: forward (move ahead), backward (reverse), left (rotate left ~30deg), "
-    "right (rotate right ~30deg), stop (halt completely)."
-    "\n\nCRITICAL RULES:"
-    "\n- target_visible MUST be false unless you can CLEARLY see the named target object in the image."
-    "\n- Walls, doors, furniture, and other objects are NOT the target. Only set target_visible=true "
-    "when you see the specific target object named in the mission."
-    "\n- If you have been turning in one direction for several steps, turn the opposite direction next. "
-    "Alternate turning to explore the full environment."
-    "\n- Prioritize forward movement when the path ahead is clear. Only turn to avoid obstacles or "
-    "search new areas."
-    "\n- Do not repeat the same action many times in a row. Vary your actions."
+    "You detect objects in robot camera images."
+    "\n\nYour ONLY job is to determine if the target object is visible in the image."
+    "\n\nRules:"
+    "\n- target_visible MUST be false unless you can CLEARLY see the named target object."
+    "\n- Look carefully at ALL objects in the image: on floors, walls, shelves, corners, tables."
+    "\n- The target may be small, partially visible, or in the background."
+    "\n- When in doubt, set target_visible=false."
+    "\n- action should always be 'forward' (navigation is handled separately)."
+    "\n- If target_visible is true, explain what you see in reasoning."
 )
 
 

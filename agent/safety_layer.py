@@ -29,6 +29,8 @@ class SafetyLayer:
 
         from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
         qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST)
+
+        self._cmd_vel_pub = self.node.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.node.create_subscription(LaserScan, self.lidar_topic, self._scan_callback, qos)
         logger.info("Safety layer started (min_range=%.2fm, arc=±%d°)", self.min_range_m, self.forward_arc_deg)
 
@@ -57,8 +59,8 @@ class SafetyLayer:
             was_active = self._safety_active
             self._safety_active = obstacle_in_arc
 
-        if obstacle_in_arc and not was_active:
-            logger.warning("SAFETY: obstacle detected in forward arc (< %.2fm), stopping", self.min_range_m)
+        if obstacle_in_arc:
+            self._cmd_vel_pub.publish(Twist())
             if self._action_executor:
                 self._action_executor.set_safety_override(True)
 
@@ -66,6 +68,9 @@ class SafetyLayer:
             logger.info("SAFETY: forward arc clear, resuming")
             if self._action_executor:
                 self._action_executor.set_safety_override(False)
+
+        if obstacle_in_arc and not was_active:
+            logger.warning("SAFETY: obstacle detected in forward arc (< %.2fm), stopping", self.min_range_m)
 
     @staticmethod
     def _normalize_angle(angle: float) -> float:
