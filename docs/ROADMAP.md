@@ -16,14 +16,14 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Local VLM prototype (Phi-3-Vision) · [#1](https://github.com/thaije/derpbot-vlm/issues/1)
-Camera → Phi-3-Vision → action JSON → cmd_vel. No API dependency, zero inference cost.
+### 1. Safety layer collision bug · [#7](https://github.com/thaije/derpbot-vlm/issues/7)
+cmd_vel persists after execute() returns; robot still collides despite LiDAR override. Need continuous cmd_vel publishing with safety interrupt. Blocks validation (#3).
 
-### 2. Safety layer · [#2](https://github.com/thaije/derpbot-vlm/issues/2)
-LiDAR subscriber in separate thread. Min range < 0.3 m in forward arc → override cmd_vel to zero. Must run independently of VLM.
+### 2. VLM never finds/detects target · [#6](https://github.com/thaije/derpbot-vlm/issues/6)
+Robot explores 99% but never reaches drill (4.35m away) and never publishes a detection. Need better search strategy and detection triggering. Blocks validation (#3).
 
 ### 3. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0.
+Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by #6 and #7.
 
 ---
 
@@ -31,8 +31,16 @@ Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0.
 
 Titles only. Expand when a task is promoted to "Next".
 
+- **VLM tool calling** — Define `navigate()` and `report_detection()` as Ollama tools; model decides when to call each. Replaces `target_visible` boolean field with separate detection tool call. Lets VLM report detections independently of navigation actions. Depends on verifying gemma4:e2b tool calling support.
 - **Benchmark submission** · [#4](https://github.com/thaije/derpbot-vlm/issues/4) — `validate_submission.py` + result JSONs.
 - **Medium/hard tier scenarios** · [#5](https://github.com/thaije/derpbot-vlm/issues/5) — once easy ≥ 3/5.
+
+---
+
+## Completed
+
+- **Local VLM prototype** · [#1](https://github.com/thaije/derpbot-vlm/issues/1) — Closed. Camera → Ollama (gemma4:e2b) → action JSON → cmd_vel. Fully local.
+- **Safety layer (initial)** · [#2](https://github.com/thaije/derpbot-vlm/issues/2) — Closed. Implemented but has collision regression, see #7.
 
 ---
 

@@ -1,19 +1,16 @@
 import base64
 import io
-import json
 import logging
-import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
+
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
-
-VALID_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 
 SYSTEM_PROMPT = (
     "You navigate a mobile robot through indoor environments using camera images. "
     "Your goal is to explore efficiently and find the mission target object. "
-    '\n\nRespond ONLY with JSON: {"action": "forward", "reasoning": "brief", "target_visible": false}'
     "\n\nActions: forward (move ahead), backward (reverse), left (rotate left ~30deg), "
     "right (rotate right ~30deg), stop (halt completely)."
     "\n\nCRITICAL RULES:"
@@ -25,8 +22,16 @@ SYSTEM_PROMPT = (
     "\n- Prioritize forward movement when the path ahead is clear. Only turn to avoid obstacles or "
     "search new areas."
     "\n- Do not repeat the same action many times in a row. Vary your actions."
-    "\n- Do not add any text before or after the JSON."
 )
+
+
+class NavigationAction(BaseModel):
+    action: Literal["forward", "backward", "left", "right", "stop"]
+    reasoning: str
+    target_visible: bool
+
+
+NAV_ACTION_SCHEMA = NavigationAction.model_json_schema()
 
 
 @dataclass
@@ -34,61 +39,6 @@ class VLMResult:
     action: str
     reasoning: str
     target_visible: bool
-
-
-def _parse_response(text: str) -> Optional[VLMResult]:
-    # Strip markdown code fences (gemma4 wraps JSON in ```json ... ```)
-    text = re.sub(r'```json\s*', '', text)
-    text = re.sub(r'```\s*', '', text)
-
-    json_match = re.search(r"\{.*?\}", text, re.DOTALL)
-    if not json_match:
-        partial = re.search(r'\{[^}]*', text)
-        if partial:
-            candidate = partial.group() + '}'
-        else:
-            logger.warning("No JSON object found in VLM response: %s", text[:200])
-            return None
-    else:
-        candidate = json_match.group()
-
-    raw_json = candidate
-    try:
-        data = json.loads(raw_json)
-    except json.JSONDecodeError:
-        fixed = raw_json.replace("'", '"')
-        fixed = re.sub(r'"\.\s*"', '", "', fixed)
-        fixed = re.sub(r'"\s*\.\s*\}', '"}', fixed)
-        fixed = fixed.replace("True", "true").replace("False", "false")
-        fixed = re.sub(r',\s*\}', '}', fixed)
-        try:
-            data = json.loads(fixed)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse JSON from VLM: %s", raw_json[:200])
-            return None
-
-    action = data.get("action", "stop").lower().strip()
-    if action not in VALID_ACTIONS:
-        logger.warning("Invalid action '%s', defaulting to stop", action)
-        action = "stop"
-
-    reasoning = str(data.get("reasoning", ""))
-    tv = data.get("target_visible", False)
-    if isinstance(tv, str):
-        target_visible = tv.lower() in ("true", "1", "yes")
-    else:
-        target_visible = bool(tv)
-
-    return VLMResult(action=action, reasoning=reasoning, target_visible=target_visible)
-
-
-def _strip_thinking(text: str) -> str:
-    text = re.sub(r'<\|channel\|>thought.*?<\|channel\|>', '', text, flags=re.DOTALL)
-    text = re.sub(r'\u2768\u4f0d.*?\u2769', '', text, flags=re.DOTALL)
-    text = re.sub(r'<\|think\|>.*?<\|/think\|>', '', text, flags=re.DOTALL)
-    text = re.sub(r'```json\s*', '', text)
-    text = re.sub(r'```\s*', '', text)
-    return text.strip()
 
 
 class VLMClient:
@@ -147,6 +97,7 @@ class VLMClient:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": prompt, "images": [img_b64]},
                     ],
+                    format=NAV_ACTION_SCHEMA,
                     options={"temperature": 0.3},
                     stream=False,
                     keep_alive=-1,
@@ -156,11 +107,12 @@ class VLMClient:
                     logger.warning("VLM returned empty (attempt %d/%d)", attempt, self.max_retries)
                     continue
 
-                raw = _strip_thinking(raw)
-                result = _parse_response(raw)
-                if result is not None:
-                    return result
-                logger.warning("Failed to parse VLM response (attempt %d/%d): %s", attempt, self.max_retries, raw[:100])
+                parsed = NavigationAction.model_validate_json(raw)
+                return VLMResult(
+                    action=parsed.action,
+                    reasoning=parsed.reasoning,
+                    target_visible=parsed.target_visible,
+                )
 
             except Exception as e:
                 logger.error("VLM query error (attempt %d/%d): %s", attempt, self.max_retries, e)
