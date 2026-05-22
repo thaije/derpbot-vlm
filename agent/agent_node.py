@@ -29,6 +29,8 @@ DRIFT_SPEED = 0.08
 SIDE_THRESHOLD = 0.4
 STUCK_THRESHOLD_M = 0.15
 STUCK_WINDOW_S = 15.0
+WEDGE_BACKUP_SPEED = -0.25
+WEDGE_BACKUP_DURATION_S = 1.5
 
 
 def load_config(path: str = "config/vlm_config.yaml") -> dict:
@@ -319,6 +321,7 @@ class AgentNode:
         target_visible_count = 0
         target_visible_threshold = 1
         approach_mode_until_sim = 0.0
+        backup_until_sim = 0.0
 
         try:
             while not self._done_event.is_set():
@@ -345,16 +348,34 @@ class AgentNode:
 
                 if zones is not None:
                     front_dist, left_dist, right_dist = zones
+                    in_backup = sim_now < backup_until_sim
 
-                    if in_approach_mode:
+                    if in_backup:
+                        self._publish_cmd_vel(WEDGE_BACKUP_SPEED, TURN_SPEED * self._turn_direction * 0.5)
+                        self._consecutive_forward = 0
+
+                    elif in_approach_mode:
                         if front_dist < SAFETY_STOP_DIST:
-                            self._publish_cmd_vel(0.0, TURN_SPEED * self._turn_direction)
+                            safe_dir = -1 if left_dist < right_dist else 1
+                            self._turn_direction = safe_dir
+                            self._publish_cmd_vel(0.0, TURN_SPEED * safe_dir)
                         else:
                             self._publish_cmd_vel(DRIVE_SPEED, 0.0)
                             self._consecutive_forward += 1
 
                     elif front_dist < SAFETY_STOP_DIST:
-                        self._publish_cmd_vel(0.0, TURN_SPEED * self._turn_direction * 1.2)
+                        if left_dist < SIDE_THRESHOLD and right_dist < SIDE_THRESHOLD:
+                            safe_dir = -1 if left_dist < right_dist else 1
+                            self._turn_direction = safe_dir
+                            backup_until_sim = sim_now + WEDGE_BACKUP_DURATION_S
+                            logger.warning("WEDGED at (%.2f,%.2f) f=%.2f L=%.2f R=%.2f, backing up + turning %s",
+                                           self._odom_x, self._odom_y, front_dist, left_dist, right_dist,
+                                           "right" if safe_dir < 0 else "left")
+                            self._publish_cmd_vel(WEDGE_BACKUP_SPEED, TURN_SPEED * safe_dir * 0.5)
+                        else:
+                            safe_dir = -1 if left_dist < right_dist else 1
+                            self._turn_direction = safe_dir
+                            self._publish_cmd_vel(0.0, TURN_SPEED * safe_dir * 1.2)
                         self._consecutive_forward = 0
 
                     elif in_stuck_recovery and sim_now < stuck_recovery_end_sim:
@@ -363,7 +384,9 @@ class AgentNode:
 
                     elif front_dist < WALL_THRESHOLD:
                         if front_dist < 0.4:
-                            self._publish_cmd_vel(0.0, TURN_SPEED * self._turn_direction)
+                            safe_dir = -1 if left_dist < right_dist else 1
+                            self._turn_direction = safe_dir
+                            self._publish_cmd_vel(0.0, TURN_SPEED * safe_dir)
                         else:
                             turn_away = -1 if left_dist < right_dist else 1
                             self._turn_direction = turn_away

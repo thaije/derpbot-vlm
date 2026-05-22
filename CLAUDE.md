@@ -81,6 +81,7 @@ Scores are high-variance across seeds and repeats. Before trusting a delta, run 
 
 ## Flow & Runtime
 - Python interpreter: always `python3.12`. `python3` may resolve to another venv.
+- **`.opencode/agents/arst-runner.md` does NOT apply here** — it targets `derpbot-explorer` (separate Nav2/SLAM stack). For derpbot-vlm scenarios, follow `docs/STATE.md` "How to run" (separate tmux sessions for sim and agent).
 
 ---
 

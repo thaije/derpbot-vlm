@@ -7,17 +7,20 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**Seed 1, basement_find/easy** (fire_extinguisher target):
+**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after #7 safety fix (direction-aware turn + wedge backup):**
 
-| Run | Overall | Exploration | Min dist | Collisions | Detections (TP/FP) |
-|-----|---------|-------------|----------|------------|---------------------|
-| baseline (VLM-nav) | 16/100 | 99% | 5.58m | 1 | 0/0 |
-| LiDAR+VLM hybrid (local) | 4/100 | 99.5% | 1.88m | 16-23 | 0/2 |
-| LiDAR+VLM hybrid (cloud) | 6.4/100 | 82.7% | 5.50m | 12 | 0/7 |
+| Seed | Target | Score | Exploration | Min dist | Collisions | Near-miss | TP/FP |
+|------|--------|-------|-------------|----------|------------|-----------|--------|
+| 1 | fire_extinguisher | 5.2 | 100% | 3.44m | 13 | 7 | 0/27 |
+| 2 | pipe_sewer_floor | 4.0 | 99.1% | **1.31m** | 11 | 14 | 0/0 |
+
+**Pre-fix baseline (seed 1, cloud):** score 6.4, exploration 82.7%, min dist 5.50m, 12 collisions, 0/7 detections.
+
+**Fix outcome:** exploration jumped 82.7→100%, min dist 5.50→1.31m (seed 2 just over 1m proximity threshold). Collisions unchanged (~12). Remaining ~11-13 collisions likely from glancing contact during turns — not addressable by the current LiDAR-only zones.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1m + valid detection.
 
-**Cloud VLM confirms:** detection *rate* is higher (7 vs 2 queries with target_visible=true), but all FPs — detection position = robot odom, not object position. Next bottleneck is detection positioning.
+**Cloud VLM (#8) findings:** detection rate target-dependent — fire_extinguisher detects ~14% of queries; pipe_sewer_floor ~0%. All detections still FP (position = robot odom).
 
 ---
 
@@ -77,7 +80,8 @@ LiDAR → reactive wall-following (front/left/right zones)
 
 ### Safety / Navigation
 - **LiDAR safety stop at <0.3m.** Pure rotation during safety; no forward movement.
-- **Wall-following at 0.5-0.8m.** Reduces collisions from 42 to 16-23.
+- **Wall-following at 0.5-0.8m.** Reduces collisions from 42 to ~12.
+- **Safety/wedge turn direction must come from LiDAR side-clearance**, not stored `_turn_direction`. Otherwise robot turns into walls. Wedge (front<0.3 AND both sides<0.4) → backup+rotate for 1.5 sim-s.
 - **Stuck detection: 10s window, 0.15m threshold.** Forced turn + cooldown prevents oscillation.
 
 ---
