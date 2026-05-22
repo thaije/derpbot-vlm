@@ -16,14 +16,11 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Safety layer collision bug · [#7](https://github.com/thaije/derpbot-vlm/issues/7)
-Current architecture publishes cmd_vel continuously, but safety/stuck turn direction is `self._turn_direction` (blind), not chosen from LiDAR side-clearance — robot turns into walls. Seeds 1-2 cloud: 12-23 collisions per run. Blocks validation (#3).
+### 1. VLM-steered navigation with reactive safety layer · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
+Architectural pivot: VLM picks heading + distance per query, LiDAR + bumper form a continuous reactive safety layer that owns cmd_vel. Distance over duration (no speed reasoning), discrete heading (left/center/right), 2m commitment cap, cloud VLM. Four phases: safety layer → VLM steering → memory → depth-based detection positioning. Supersedes #7 and #6.
 
-### 2. VLM never finds/detects target · [#6](https://github.com/thaije/derpbot-vlm/issues/6)
-Detection rate is target-dependent: fire_extinguisher ~14% on cloud (seed 1), pipe_sewer_floor 0% (seed 2). All detections still FP because position = robot odom, not object location. Needs depth/angular estimation. Blocks validation (#3).
-
-### 3. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by #6 and #7.
+### 2. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
+Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by #9.
 
 ---
 
