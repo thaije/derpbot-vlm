@@ -23,7 +23,7 @@ cmd_vel persists after execute() returns; robot still collides despite LiDAR ove
 LiDAR+VLM hybrid architecture explores 99.5% but VLM detection rate is ~4%. Min dist to target 1.88m, but detections count as FP (position mismatch). Need stronger VLM or better detection positioning. Blocks validation (#3).
 
 ### 3. Test with cloud VLM · [#8](https://github.com/thaije/derpbot-vlm/issues/8)
-Run hybrid agent with cloud VLM (GPT-4o, Claude, Gemini Pro) to confirm architecture is sound and detection bottleneck is gemma4:e2b capability. If detection rate jumps, we know the agent works — just need a better model.
+Cloud VLM (gemma4:31b-cloud) implemented and tested. Detection rate 3.5x higher but all FPs — position bottleneck remains. Issue stays open for multi-seed testing.
 
 ### 4. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
 Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by #6 and #8.

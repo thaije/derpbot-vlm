@@ -12,9 +12,12 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 | Run | Overall | Exploration | Min dist | Collisions | Detections (TP/FP) |
 |-----|---------|-------------|----------|------------|---------------------|
 | baseline (VLM-nav) | 16/100 | 99% | 5.58m | 1 | 0/0 |
-| LiDAR+VLM hybrid | 4/100 | 99.5% | 1.88m | 16-23 | 0/2 |
+| LiDAR+VLM hybrid (local) | 4/100 | 99.5% | 1.88m | 16-23 | 0/2 |
+| LiDAR+VLM hybrid (cloud) | 6.4/100 | 82.7% | 5.50m | 12 | 0/7 |
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1m + valid detection.
+
+**Cloud VLM confirms:** detection *rate* is higher (7 vs 2 queries with target_visible=true), but all FPs — detection position = robot odom, not object position. Next bottleneck is detection positioning.
 
 ---
 
@@ -40,6 +43,9 @@ LiDAR → reactive wall-following (front/left/right zones)
 **VLM (Ollama, gemma4:e2b):** Detection-only mode. Query every 3s (2s in approach).
 - Output: `{"target_visible": bool, "reasoning": str}`
 - action field unused (navigation is LiDAR-driven)
+- Supports local (`gemma4:e2b`) and cloud (`gemma4:31b-cloud`) backends
+- Cloud backend: `backend: ollama-cloud` in config, `keep_alive=0`, no local model load
+- Response parser handles: strict JSON, code-fenced JSON, partial JSON dicts, free text
 
 **Detection publishing** (when target_visible=true):
 - Topic: `/derpbot_0/detections` (vision_msgs/Detection2DArray)
@@ -63,9 +69,11 @@ LiDAR → reactive wall-following (front/left/right zones)
 - **Sim speed affects VLM frequency.** At 3x speed, 300s sim = 100s wall time, only ~15 VLM queries.
 
 ### VLM / Ollama
-- **VLM detects target ~4% of queries.** gemma4:e2b rarely says target_visible=true even when target is in frame.
+- **Cloud VLM detects target more often** (~3.5x) but all FPs — position is robot odom, not object location.
 - **Detection position must match ground truth within 1.5m.** Robot odom position used; detection at wrong position counts as FP.
 - **Line-of-sight required.** Detection through walls counts as FP_LOS, not TP.
+- **Cloud models may return free text instead of JSON.** Parser handles both via `_parse_vlm_response`.
+- **`ollama signin` required before cloud models.** Run once; auth persists.
 
 ### Safety / Navigation
 - **LiDAR safety stop at <0.3m.** Pure rotation during safety; no forward movement.
@@ -89,7 +97,12 @@ source /opt/ros/jazzy/setup.bash
 export PYTHONPATH=/home/plip/Projects/derpbot-vlm:/opt/ros/jazzy/lib/python3.12/site-packages
 export DERPBOT_READY_FLAG=/tmp/derpbot_agent_ready
 rm -f /tmp/derpbot_agent_ready
-.venv/bin/python3.12 -m agent.agent_node
+
+# Run with local VLM (default):
+.venv/bin/python3.12 -m agent.agent_node --config config/vlm_config.yaml
+
+# Run with cloud VLM (gemma4:31b-cloud, requires `ollama signin`):
+.venv/bin/python3.12 -m agent.agent_node --config config/vlm_config_cloud.yaml
 
 # Run tests
 PYTHONPATH=. .venv/bin/python3.12 -m pytest tests/ -v -p no:launch_testing

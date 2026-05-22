@@ -1,5 +1,5 @@
 import pytest
-from agent.vlm_client import NavigationAction, VLMResult
+from agent.vlm_client import NavigationAction, VLMResult, _parse_vlm_response
 
 
 class TestNavigationAction:
@@ -47,4 +47,44 @@ class TestVLMResult:
         parsed = NavigationAction.model_validate_json(raw)
         result = VLMResult(action=parsed.action, reasoning=parsed.reasoning, target_visible=parsed.target_visible)
         assert result.action == "right"
+        assert result.target_visible is False
+
+
+class TestParseVLMResponse:
+    def test_clean_json(self):
+        result = _parse_vlm_response('{"action": "forward", "reasoning": "clear view", "target_visible": true}')
+        assert result.target_visible is True
+        assert result.action == "forward"
+
+    def test_json_in_code_fence(self):
+        result = _parse_vlm_response('```json\n{"action": "forward", "reasoning": "no target", "target_visible": false}\n```')
+        assert result.target_visible is False
+
+    def test_json_embedded_in_text(self):
+        result = _parse_vlm_response('I analyzed the image. {"target_visible": true, "reasoning": "fire extinguisher on wall", "action": "forward"} The target is present.')
+        assert result.target_visible is True
+        assert "fire extinguisher" in result.reasoning
+
+    def test_partial_json_missing_action(self):
+        result = _parse_vlm_response('{"target_visible": false, "reasoning": "nothing here"}')
+        assert result.target_visible is False
+        assert result.action == "forward"
+
+    def test_free_text_visible(self):
+        result = _parse_vlm_response("I can see the target fire extinguisher on the wall to the left.")
+        assert result.target_visible is True
+
+    def test_free_text_not_visible(self):
+        result = _parse_vlm_response("The fire extinguisher is not visible in this image.")
+        assert result.target_visible is False
+
+    def test_free_text_no_target(self):
+        result = _parse_vlm_response("No target object can be seen in the current frame.")
+        assert result.target_visible is False
+
+    def test_empty_returns_none(self):
+        assert _parse_vlm_response("") is None
+
+    def test_unparseable_defaults_not_visible(self):
+        result = _parse_vlm_response("The image shows a corridor with walls and a door.")
         assert result.target_visible is False
