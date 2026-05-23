@@ -104,6 +104,10 @@ class ReactiveSafetyLayer:
         with self._lock:
             return self._lidar_veto_active
 
+    def front_clearance_m(self) -> float:
+        with self._lock:
+            return self._scan_min_front
+
     @property
     def collision_events(self) -> int:
         with self._lock:
@@ -223,6 +227,8 @@ class ReactiveSafetyLayer:
 
         veto = (desired_lin > 0.0) and (front < self.min_range_m)
         if veto:
+            # Zero forward. If the upstream wasn't already turning, slide toward
+            # the more open side so the robot doesn't deadlock facing a wall.
             ang = desired_ang
             if abs(ang) < 1e-3:
                 ang = 0.7 if left >= right else -0.7

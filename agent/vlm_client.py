@@ -6,96 +6,146 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You detect objects in robot camera images."
-    "\n\nYour ONLY job is to determine if the target object is visible in the image."
-    "\n\nRules:"
-    "\n- target_visible MUST be false unless you can CLEARLY see the named target object."
-    "\n- Look carefully at ALL objects in the image: on floors, walls, shelves, corners, tables."
-    "\n- The target may be small, partially visible, or in the background."
-    "\n- When in doubt, set target_visible=false."
-    "\n- action should always be 'forward' (navigation is handled separately)."
-    "\n- If target_visible is true, explain what you see in reasoning."
-    "\n\nYou MUST respond with valid JSON matching this schema:"
-    "\n{\"action\": \"forward\", \"reasoning\": \"...\", \"target_visible\": true/false}"
+    "You are steering a robot through an indoor environment using a camera view."
+    "\nFor every image, you must decide TWO things in one JSON response:"
+    "\n  1. DETECT — is the target object visible?"
+    "\n     Set target_visible=true only if you clearly see the named target."
+    "\n     If true, fill target_bbox=[x1,y1,x2,y2] in pixel coordinates (image is up to 384x288)."
+    "\n  2. NAVIGATE — pick the next heading and how far to drive there."
+    "\n     heading ∈ {\"left\" (~30° left), \"center\" (straight), \"right\" (~30° right)}."
+    "\n     drive_distance_m ∈ [0.0, 2.0]. 0.0 = stop and rescan."
+    "\nGuidelines:"
+    "\n  - When the target is visible, drive toward it. Pick the heading that points at it; pick a"
+    "\n    distance close to how far away it appears."
+    "\n  - When the target is NOT visible, pick a heading that leads into open, unexplored space."
+    "\n  - Avoid walls/obstacles. Use shorter distances (0.3-0.8 m) in cluttered or uncertain scenes;"
+    "\n    longer (1.0-2.0 m) when the path ahead is clearly open."
+    "\n  - If you are facing a wall and no good option, choose left or right with a small distance."
+    "\nReply with valid JSON ONLY, matching this schema:"
+    "\n{\"target_visible\": bool, \"target_bbox\": [x1,y1,x2,y2] or null,"
+    " \"heading\": \"left\"|\"center\"|\"right\", \"drive_distance_m\": float, \"reason\": str}"
 )
 
 
-class NavigationAction(BaseModel):
-    action: Literal["forward", "backward", "left", "right", "stop"]
-    reasoning: str
+class NavigationDecision(BaseModel):
     target_visible: bool
+    target_bbox: Optional[list[int]] = None
+    heading: Literal["left", "center", "right"]
+    drive_distance_m: float = Field(ge=0.0, le=2.0)
+    reason: str
 
 
-NAV_ACTION_SCHEMA = NavigationAction.model_json_schema()
+NAV_DECISION_SCHEMA = NavigationDecision.model_json_schema()
 
 
 @dataclass
 class VLMResult:
-    action: str
-    reasoning: str
     target_visible: bool
+    heading: str
+    drive_distance_m: float
+    target_bbox: Optional[list[int]]
+    reason: str
+
+
+_HEADING_TOKENS = {"left", "center", "right"}
+
+
+def _clamp_distance(v) -> float:
+    try:
+        d = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(2.0, d))
+
+
+def _coerce_heading(v) -> str:
+    s = str(v or "").strip().lower()
+    if s in _HEADING_TOKENS:
+        return s
+    if s in {"l", "ccw", "anticlockwise"}:
+        return "left"
+    if s in {"r", "cw", "clockwise"}:
+        return "right"
+    return "center"
+
+
+def _coerce_bbox(v) -> Optional[list[int]]:
+    if v is None:
+        return None
+    if not isinstance(v, (list, tuple)) or len(v) != 4:
+        return None
+    try:
+        return [int(x) for x in v]
+    except (TypeError, ValueError):
+        return None
+
+
+def _result_from_dict(d: dict, raw: str) -> VLMResult:
+    return VLMResult(
+        target_visible=bool(d.get("target_visible", False)),
+        heading=_coerce_heading(d.get("heading", "center")),
+        drive_distance_m=_clamp_distance(d.get("drive_distance_m", 0.0)),
+        target_bbox=_coerce_bbox(d.get("target_bbox")),
+        reason=str(d.get("reason", d.get("reasoning", raw[:200]))),
+    )
 
 
 def _parse_vlm_response(raw: str) -> Optional[VLMResult]:
     if not raw:
         return None
 
-    json_pattern = r'\{[^{}]*"target_visible"\s*:\s*(?:true|false)[^{}]*\}'
-    matches = re.findall(json_pattern, raw, re.IGNORECASE)
-    for candidate in matches:
+    s = raw.strip()
+    if s.startswith("{"):
         try:
-            data = json.loads(candidate)
-            return VLMResult(
-                action=data.get("action", "forward"),
-                reasoning=data.get("reasoning", ""),
-                target_visible=bool(data.get("target_visible", False)),
-            )
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    if raw.strip().startswith("{"):
-        try:
-            data = json.loads(raw.strip())
-            return VLMResult(
-                action=data.get("action", "forward"),
-                reasoning=data.get("reasoning", ""),
-                target_visible=bool(data.get("target_visible", False)),
-            )
+            return _result_from_dict(json.loads(s), raw)
         except (json.JSONDecodeError, ValueError):
             pass
 
-    visible_patterns = [
-        r"target_visible\s*:\s*true",
-        r"i\s+can\s+see\s+the\s+target",
-        r"the\s+target\s+is\s+visible",
-        r"i\s+see\s+(?:a\s+)?(?:fire\s+extinguisher|drink\s+can|drill|pipe|suitcase)",
-    ]
-    not_visible_patterns = [
-        r"target_visible\s*:\s*false",
-        r"not\s+visible",
-        r"no\s+target",
-        r"cannot\s+(?:see|find)",
-        r"no\s+(?:fire\s+extinguisher|drink|drill|pipe|suitcase)",
-        r"do\s+not\s+see",
-        r"is\s+not\s+(?:present|in\s+(?:the\s+)?(?:image|view|frame|picture))",
-    ]
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fence:
+        try:
+            return _result_from_dict(json.loads(fence.group(1)), raw)
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-    text_lower = raw.lower()
-    for pattern in visible_patterns:
-        if re.search(pattern, text_lower):
-            return VLMResult(action="forward", reasoning=raw[:200], target_visible=True)
+    obj = re.search(r"\{[^{}]*\"target_visible\"\s*:\s*(?:true|false)[^{}]*\}", raw, re.IGNORECASE)
+    if obj:
+        try:
+            return _result_from_dict(json.loads(obj.group(0)), raw)
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-    for pattern in not_visible_patterns:
-        if re.search(pattern, text_lower):
-            return VLMResult(action="forward", reasoning=raw[:200], target_visible=False)
+    text = raw.lower()
+    visible = bool(re.search(r"target_visible\s*[:=]\s*true", text)) or bool(
+        re.search(r"i\s+(?:can\s+)?see\s+(?:a\s+|the\s+)?(?:fire\s+extinguisher|drink|drill|pipe|suitcase|target)", text)
+    )
+    heading = "center"
+    m = re.search(r"heading\s*[:=]\s*\"?(left|center|right)\"?", text)
+    if m:
+        heading = m.group(1)
+    elif re.search(r"\bturn\s+left|go\s+left\b", text):
+        heading = "left"
+    elif re.search(r"\bturn\s+right|go\s+right\b", text):
+        heading = "right"
 
-    logger.warning("Could not parse VLM response, treating as not visible: %s", raw[:200])
-    return VLMResult(action="forward", reasoning=raw[:200], target_visible=False)
+    dist = 0.5
+    m = re.search(r"(?:drive_distance_m|distance|drive)\s*[:=]\s*([0-9]*\.?[0-9]+)", text)
+    if m:
+        dist = _clamp_distance(m.group(1))
+
+    logger.warning("VLM response unstructured, heuristic parse: %s", raw[:200])
+    return VLMResult(
+        target_visible=visible,
+        heading=heading,
+        drive_distance_m=dist,
+        target_bbox=None,
+        reason=raw[:200],
+    )
 
 
 class VLMClient:
@@ -171,7 +221,7 @@ class VLMClient:
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": prompt, "images": [img_b64]},
                     ],
-                    format=NAV_ACTION_SCHEMA,
+                    format=NAV_DECISION_SCHEMA,
                     options={"temperature": 0.3},
                     stream=False,
                     keep_alive=keep_alive,
@@ -183,7 +233,9 @@ class VLMClient:
 
                 result = _parse_vlm_response(raw)
                 if result is not None:
-                    logger.info("VLM parsed: vis=%s | %s", result.target_visible, result.reasoning[:100])
+                    logger.info("VLM: vis=%s hdg=%s dist=%.2f | %s",
+                                result.target_visible, result.heading,
+                                result.drive_distance_m, result.reason[:100])
                     return result
                 logger.warning("VLM response unparseable (attempt %d/%d): %.200s", attempt, self.max_retries, raw)
 
@@ -191,4 +243,10 @@ class VLMClient:
                 logger.error("VLM query error (attempt %d/%d): %s", attempt, self.max_retries, e)
 
         logger.error("All %d VLM attempts failed, defaulting to stop", self.max_retries)
-        return VLMResult(action="stop", reasoning="VLM query failed after retries", target_visible=False)
+        return VLMResult(
+            target_visible=False,
+            heading="center",
+            drive_distance_m=0.0,
+            target_bbox=None,
+            reason="VLM query failed after retries",
+        )

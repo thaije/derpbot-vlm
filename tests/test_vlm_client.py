@@ -1,90 +1,103 @@
 import pytest
-from agent.vlm_client import NavigationAction, VLMResult, _parse_vlm_response
+from agent.vlm_client import NavigationDecision, VLMResult, _parse_vlm_response
 
 
-class TestNavigationAction:
-    def test_valid_json_all_actions(self):
-        for action in ["forward", "backward", "left", "right", "stop"]:
-            raw = f'{{"action": "{action}", "reasoning": "test", "target_visible": false}}'
-            parsed = NavigationAction.model_validate_json(raw)
-            assert parsed.action == action
-            assert parsed.target_visible is False
-
-    def test_target_visible_true(self):
-        raw = '{"action": "forward", "reasoning": "drill visible", "target_visible": true}'
-        parsed = NavigationAction.model_validate_json(raw)
-        assert parsed.target_visible is True
-        assert parsed.action == "forward"
-
-    def test_target_visible_false(self):
-        raw = '{"action": "left", "reasoning": "no drill visible", "target_visible": false}'
-        parsed = NavigationAction.model_validate_json(raw)
+class TestNavigationDecision:
+    def test_valid_minimal(self):
+        raw = '{"target_visible": false, "heading": "center", "drive_distance_m": 1.0, "reason": "open path"}'
+        parsed = NavigationDecision.model_validate_json(raw)
         assert parsed.target_visible is False
+        assert parsed.heading == "center"
+        assert parsed.drive_distance_m == 1.0
+        assert parsed.target_bbox is None
 
-    def test_action_must_be_valid_literal(self):
+    def test_with_bbox(self):
+        raw = '{"target_visible": true, "target_bbox": [10, 20, 100, 200], "heading": "left", "drive_distance_m": 0.5, "reason": "target on left"}'
+        parsed = NavigationDecision.model_validate_json(raw)
+        assert parsed.target_visible is True
+        assert parsed.target_bbox == [10, 20, 100, 200]
+        assert parsed.heading == "left"
+
+    def test_distance_bounds(self):
         with pytest.raises(Exception):
-            NavigationAction.model_validate_json('{"action": "jump", "reasoning": "test", "target_visible": false}')
+            NavigationDecision.model_validate_json(
+                '{"target_visible": false, "heading": "center", "drive_distance_m": 3.0, "reason": "x"}')
+        with pytest.raises(Exception):
+            NavigationDecision.model_validate_json(
+                '{"target_visible": false, "heading": "center", "drive_distance_m": -0.1, "reason": "x"}')
+
+    def test_heading_must_be_literal(self):
+        with pytest.raises(Exception):
+            NavigationDecision.model_validate_json(
+                '{"target_visible": false, "heading": "forward", "drive_distance_m": 1.0, "reason": "x"}')
 
     def test_missing_field_rejected(self):
         with pytest.raises(Exception):
-            NavigationAction.model_validate_json('{"action": "forward"}')
-
-    def test_extra_fields_ignored(self):
-        raw = '{"action": "forward", "reasoning": "test", "target_visible": false, "extra": "ignored"}'
-        parsed = NavigationAction.model_validate_json(raw)
-        assert parsed.action == "forward"
+            NavigationDecision.model_validate_json('{"target_visible": false, "heading": "center"}')
 
 
 class TestVLMResult:
-    def test_vlm_result_fields(self):
-        result = VLMResult(action="forward", reasoning="clear path", target_visible=False)
-        assert result.action == "forward"
-        assert result.reasoning == "clear path"
-        assert result.target_visible is False
-
-    def test_vlm_result_from_parsed(self):
-        raw = '{"action": "right", "reasoning": "wall ahead", "target_visible": false}'
-        parsed = NavigationAction.model_validate_json(raw)
-        result = VLMResult(action=parsed.action, reasoning=parsed.reasoning, target_visible=parsed.target_visible)
-        assert result.action == "right"
-        assert result.target_visible is False
+    def test_fields(self):
+        r = VLMResult(target_visible=True, heading="right", drive_distance_m=1.2,
+                      target_bbox=[1, 2, 3, 4], reason="ok")
+        assert r.target_visible is True
+        assert r.heading == "right"
+        assert r.drive_distance_m == 1.2
+        assert r.target_bbox == [1, 2, 3, 4]
 
 
 class TestParseVLMResponse:
     def test_clean_json(self):
-        result = _parse_vlm_response('{"action": "forward", "reasoning": "clear view", "target_visible": true}')
-        assert result.target_visible is True
-        assert result.action == "forward"
+        r = _parse_vlm_response(
+            '{"target_visible": true, "target_bbox": [5,6,7,8], "heading": "center", "drive_distance_m": 1.5, "reason": "ok"}')
+        assert r.target_visible is True
+        assert r.heading == "center"
+        assert r.drive_distance_m == 1.5
+        assert r.target_bbox == [5, 6, 7, 8]
 
     def test_json_in_code_fence(self):
-        result = _parse_vlm_response('```json\n{"action": "forward", "reasoning": "no target", "target_visible": false}\n```')
-        assert result.target_visible is False
+        raw = '```json\n{"target_visible": false, "heading": "left", "drive_distance_m": 0.5, "reason": "wall"}\n```'
+        r = _parse_vlm_response(raw)
+        assert r.target_visible is False
+        assert r.heading == "left"
+        assert r.drive_distance_m == 0.5
 
-    def test_json_embedded_in_text(self):
-        result = _parse_vlm_response('I analyzed the image. {"target_visible": true, "reasoning": "fire extinguisher on wall", "action": "forward"} The target is present.')
-        assert result.target_visible is True
-        assert "fire extinguisher" in result.reasoning
+    def test_distance_clamp_above(self):
+        r = _parse_vlm_response(
+            '{"target_visible": false, "heading": "center", "drive_distance_m": 5.0, "reason": "x"}')
+        assert r.drive_distance_m == 2.0
 
-    def test_partial_json_missing_action(self):
-        result = _parse_vlm_response('{"target_visible": false, "reasoning": "nothing here"}')
-        assert result.target_visible is False
-        assert result.action == "forward"
+    def test_distance_clamp_below(self):
+        r = _parse_vlm_response(
+            '{"target_visible": false, "heading": "center", "drive_distance_m": -2.0, "reason": "x"}')
+        assert r.drive_distance_m == 0.0
+
+    def test_heading_coercion_uppercase(self):
+        r = _parse_vlm_response(
+            '{"target_visible": false, "heading": "LEFT", "drive_distance_m": 0.8, "reason": "x"}')
+        assert r.heading == "left"
+
+    def test_heading_unknown_defaults_center(self):
+        r = _parse_vlm_response(
+            '{"target_visible": false, "heading": "forward", "drive_distance_m": 0.8, "reason": "x"}')
+        assert r.heading == "center"
 
     def test_free_text_visible(self):
-        result = _parse_vlm_response("I can see the target fire extinguisher on the wall to the left.")
-        assert result.target_visible is True
+        r = _parse_vlm_response("I can see the target fire extinguisher on the wall to the left, turn left.")
+        assert r.target_visible is True
+        assert r.heading == "left"
 
     def test_free_text_not_visible(self):
-        result = _parse_vlm_response("The fire extinguisher is not visible in this image.")
-        assert result.target_visible is False
-
-    def test_free_text_no_target(self):
-        result = _parse_vlm_response("No target object can be seen in the current frame.")
-        assert result.target_visible is False
+        r = _parse_vlm_response("The fire extinguisher is not visible in this image. Go right.")
+        assert r.target_visible is False
+        assert r.heading == "right"
 
     def test_empty_returns_none(self):
         assert _parse_vlm_response("") is None
 
-    def test_unparseable_defaults_not_visible(self):
-        result = _parse_vlm_response("The image shows a corridor with walls and a door.")
-        assert result.target_visible is False
+    def test_unparseable_defaults_safe(self):
+        r = _parse_vlm_response("The image shows a corridor with walls and a door.")
+        assert r.target_visible is False
+        assert r.heading == "center"
+        assert r.drive_distance_m == 0.5
+        assert r.target_bbox is None
