@@ -85,6 +85,20 @@ class AgentNode:
         self.node.create_subscription(
             Odometry, ros_cfg["odom_topic"], self._odom_callback, qos_be)
 
+        self._depth_image = None
+        self._depth_lock = Lock()
+        depth_topic = ros_cfg.get("depth_topic")
+        if depth_topic:
+            self.node.create_subscription(
+                RosImage, depth_topic, self._depth_callback, qos_be)
+
+        self._camera_K = None
+        self._camera_K_lock = Lock()
+        cam_info_topic = ros_cfg.get("camera_info_topic", "/derpbot_0/rgbd/camera_info")
+        from sensor_msgs.msg import CameraInfo
+        self.node.create_subscription(
+            CameraInfo, cam_info_topic, self._camera_info_callback, qos_be)
+
         from agent.safety_layer import ReactiveSafetyLayer
         self.safety = ReactiveSafetyLayer(self.node, config)
 
@@ -124,8 +138,26 @@ class AgentNode:
             pil_image = Image.fromarray(frame)
             with self._image_lock:
                 self._latest_image = pil_image
+                self._latest_image_width = pil_image.size[0]
+                self._latest_image_height = pil_image.size[1]
         except Exception as e:
             logger.debug("Image callback error: %s", e)
+
+    def _depth_callback(self, msg):
+        try:
+            depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+            with self._depth_lock:
+                self._depth_image = depth
+                self._depth_width = depth.shape[1]
+                self._depth_height = depth.shape[0]
+        except Exception as e:
+            logger.debug("Depth callback error: %s", e)
+
+    def _camera_info_callback(self, msg):
+        with self._camera_K_lock:
+            self._camera_K = list(msg.k)
+            self._camera_info_width = msg.width
+            self._camera_info_height = msg.height
 
     def _odom_callback(self, msg):
         with self._odom_lock:
@@ -169,25 +201,61 @@ class AgentNode:
             "Reply JSON only."
         )
 
-    def _publish_detection(self, target_type: str):
+    def _publish_detection(self, target_type: str, bbox: list | None = None):
         if self._detection_pub is None:
             return
         from std_msgs.msg import Header
         from vision_msgs.msg import Detection2D, ObjectHypothesisWithPose
+        from agent.depth_projection import back_project_bbox, stable_track_id
 
-        odom_x, odom_y, _ = self._get_odom()
-        self._detection_counter += 1
+        odom_x, odom_y, odom_yaw = self._get_odom()
+
+        # Try depth-based positioning. Fall back to robot pose (counts as FP
+        # if too far from ground truth — that's the Phase 4 known limitation
+        # when depth or bbox is missing).
+        with self._depth_lock:
+            depth = self._depth_image
+        with self._camera_K_lock:
+            K = self._camera_K
+
+        proj = None
+        scaled_bbox = bbox
+        if bbox is not None and depth is not None and K is not None:
+            # The VLM sees a resized image (max 384 px). Bboxes from the VLM
+            # are in that resized frame; rescale to depth-image dimensions.
+            with self._image_lock:
+                img_w = getattr(self, "_latest_image_width", None)
+                img_h = getattr(self, "_latest_image_height", None)
+            d_h, d_w = depth.shape[:2]
+            if img_w and img_h and (img_w != d_w or img_h != d_h):
+                sx = d_w / float(img_w)
+                sy = d_h / float(img_h)
+                scaled_bbox = [
+                    int(bbox[0] * sx), int(bbox[1] * sy),
+                    int(bbox[2] * sx), int(bbox[3] * sy),
+                ]
+            proj = back_project_bbox(scaled_bbox, depth, K, odom_x, odom_y, odom_yaw)
+
+        if proj is not None:
+            tgt_x, tgt_y, est_depth = proj
+            track = stable_track_id(target_type, tgt_x, tgt_y)
+            log_extra = f"depth={est_depth:.2f}m bbox_scaled={scaled_bbox}"
+        else:
+            tgt_x, tgt_y = float(odom_x), float(odom_y)
+            self._detection_counter += 1
+            track = f"vlm_track_{self._detection_counter}"
+            log_extra = "no_depth/bbox (fallback to robot pose)"
 
         det = Detection2D()
         det.header = Header()
         det.header.frame_id = "map"
-        det.id = f"vlm_track_{self._detection_counter}"
+        det.id = track
 
         hyp = ObjectHypothesisWithPose()
         hyp.hypothesis.class_id = target_type
         hyp.hypothesis.score = 0.8
-        hyp.pose.pose.position.x = float(odom_x)
-        hyp.pose.pose.position.y = float(odom_y)
+        hyp.pose.pose.position.x = float(tgt_x)
+        hyp.pose.pose.position.y = float(tgt_y)
         det.results.append(hyp)
 
         msg = self._detection_class()
@@ -195,7 +263,8 @@ class AgentNode:
         msg.detections.append(det)
 
         self._detection_pub.publish(msg)
-        logger.info("DETECTION: %s at (%.2f, %.2f)", target_type, odom_x, odom_y)
+        logger.info("DETECTION: %s id=%s at (%.2f, %.2f) %s",
+                    target_type, track, tgt_x, tgt_y, log_extra)
 
     def _check_mission_status(self) -> bool:
         url = self.config["ros"]["mission_url"]
@@ -277,7 +346,7 @@ class AgentNode:
                         self.planner.accept_decision(result, yaw, x, y, sim_now)
                         if result.target_visible:
                             target_obj = self._mission.get("target_object", "unknown")
-                            self._publish_detection(target_obj)
+                            self._publish_detection(target_obj, result.target_bbox)
 
                 # Drive: planner → safety
                 if self.planner.is_idle() or self.safety.is_blocked():
