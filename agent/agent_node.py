@@ -103,7 +103,8 @@ class AgentNode:
         self.node.create_subscription(
             LaserScan, ros_cfg["lidar_topic"], self._scan_callback, qos_best_effort)
 
-        self._cmd_pub = self.node.create_publisher(Twist, ros_cfg["cmd_vel_topic"], 10)
+        from agent.safety_layer import ReactiveSafetyLayer
+        self.safety = ReactiveSafetyLayer(self.node, config)
 
         from agent.vlm_client import VLMClient
 
@@ -207,11 +208,7 @@ class AgentNode:
         return front_dist, left_dist, right_dist
 
     def _publish_cmd_vel(self, linear_x: float, angular_z: float):
-        from geometry_msgs.msg import Twist
-        twist = Twist()
-        twist.linear.x = linear_x
-        twist.angular.z = angular_z
-        self._cmd_pub.publish(twist)
+        self.safety.command(linear_x, angular_z)
 
     def _check_stuck(self, sim_time: float) -> bool:
         x, y, _ = self._get_odom()
@@ -448,12 +445,14 @@ class AgentNode:
 
                 time.sleep(0.05)
 
-            self._publish_cmd_vel(0.0, 0.0)
-            logger.info("Agent loop finished")
+            self.safety.stop()
+            logger.info("Agent loop finished (collisions detected by safety: %d)",
+                        self.safety.collision_events)
 
         except KeyboardInterrupt:
             logger.info("Interrupted")
         finally:
+            self.safety.stop()
             self.vlm.stop()
             import rclpy
             rclpy.shutdown()

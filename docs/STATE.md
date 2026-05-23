@@ -7,16 +7,16 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after #7 safety fix (direction-aware turn + wedge backup):**
+**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after Phase 1 of #9 (bumper-aware safety layer):**
 
 | Seed | Target | Score | Exploration | Min dist | Collisions | Near-miss | TP/FP |
 |------|--------|-------|-------------|----------|------------|-----------|--------|
-| 1 | fire_extinguisher | 5.2 | 100% | 3.44m | 13 | 7 | 0/27 |
-| 2 | pipe_sewer_floor | 4.0 | 99.1% | **1.31m** | 11 | 14 | 0/0 |
+| 1 | fire_extinguisher | 4.0 | 99.1% | 5.58m | 11 | 14 | 0/0 |
+| 2 | pipe_sewer_floor | 4.0 | 99.1% | 1.30m | **23** | 17 | 0/0 |
 
-**Pre-fix baseline (seed 1, cloud):** score 6.4, exploration 82.7%, min dist 5.50m, 12 collisions, 0/7 detections.
+**Pre-Phase-1 baseline (#7):** seed 1 → 13 collisions / min 3.44m; seed 2 → 11 collisions / min 1.31m.
 
-**Fix outcome:** exploration jumped 82.7→100%, min dist 5.50→1.31m (seed 2 just over 1m proximity threshold). Collisions unchanged (~12). Remaining ~11-13 collisions likely from glancing contact during turns — not addressable by the current LiDAR-only zones.
+**Phase 1 outcome:** bumper sub + back-off + LiDAR forward veto wired up; collision regression on seed 2 (11→23) because the legacy wall-follow re-commands forward immediately after back-off completes, causing hit-back-hit loops on the same wall (7–17 contacts/wall observed). Architecture is the right scaffolding for Phase 2 (VLM steering retires wall-follow), where back-off pays off cleanly.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1m + valid detection.
 
@@ -30,17 +30,24 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 Camera → VLM detection only (3s interval, 2s in approach mode)
 LiDAR → reactive wall-following (front/left/right zones)
             ↓
-  agent_node: hybrid control loop (10Hz cmd_vel)
+  agent_node: hybrid control loop (10Hz desired)
    - LiDAR: wall-following, safety stop, stuck recovery
    - VLM: target detection (target_visible=true → approach + publish)
    - Approach mode: drive forward when target visible
+            ↓
+  ReactiveSafetyLayer (20Hz, owns /cmd_vel):
+   - command(lin, ang) API from agent_node
+   - LiDAR forward veto: front<0.25m → zero linear, slide via rotation
+   - Bumper back-off: non-ground contact → 1.5s reverse + rotate toward open side
 ```
 
 **Navigation (LiDAR-based, reactive):**
-- Front zone (<0.3m): safety stop + turn
-- Front zone (<0.5m): wall-avoidance turn
+- Front zone (<0.3m): safety stop + turn (agent_node)
+- Front zone (<0.5m): wall-avoidance turn (agent_node)
+- Front zone (<0.25m): forward veto (safety_layer backstop)
 - Side zones (<0.8m): drift toward/away from wall
 - Stuck detection: position unchanged for 10s → forced turn
+- Bumper contact (`/derpbot_0/bumper_contact`): back-off 1.5s (-0.2 m/s + 0.6 rad/s)
 - Drive speed: 0.4 m/s forward, 0.7 rad/s turn
 
 **VLM (Ollama, gemma4:e2b):** Detection-only mode. Query every 3s (2s in approach).
@@ -79,10 +86,13 @@ LiDAR → reactive wall-following (front/left/right zones)
 - **`ollama signin` required before cloud models.** Run once; auth persists.
 
 ### Safety / Navigation
-- **LiDAR safety stop at <0.3m.** Pure rotation during safety; no forward movement.
+- **`ReactiveSafetyLayer` owns `/cmd_vel`.** agent_node calls `safety.command(lin, ang)`; safety publishes the filtered twist at 20 Hz. Direct publishes from agent_node would race with the timer.
+- **Bumper ground-plane filter is string-match only** (`"ground_plane" in str(c.collision1/2)`). A per-contact-normal filter (`|n.z| > 0.9`) over-rejects legitimate wall hits — `normals[]` is empty or non-horizontal on real wall contacts. Mirror `metrics/collision_count.py`.
+- **LiDAR safety stop at <0.3m (agent_node), forward veto at <0.25m (safety_layer).** Pure rotation during safety; no forward movement.
 - **Wall-following at 0.5-0.8m.** Reduces collisions from 42 to ~12.
 - **Safety/wedge turn direction must come from LiDAR side-clearance**, not stored `_turn_direction`. Otherwise robot turns into walls. Wedge (front<0.3 AND both sides<0.4) → backup+rotate for 1.5 sim-s.
 - **Stuck detection: 10s window, 0.15m threshold.** Forced turn + cooldown prevents oscillation.
+- **Bumper back-off + wall-follow fight each other.** After 1.5s back-off, wall-follow re-commands forward into the same wall (7+ contacts/wall observed). Will be resolved by Phase 2 of #9 (retire wall-follow for VLM steering); meanwhile a "clearing rotation" after back-off was tried but worsened collisions (21 vs 11 on seed 1) and was reverted.
 
 ---
 
