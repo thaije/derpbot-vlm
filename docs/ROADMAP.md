@@ -16,11 +16,11 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. VLM-steered navigation with reactive safety layer · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
-Architectural pivot: VLM picks heading + distance per query, LiDAR + bumper form a continuous reactive safety layer that owns cmd_vel. Distance over duration (no speed reasoning), discrete heading (left/center/right), 2m commitment cap, cloud VLM. Four phases: safety layer → VLM steering → memory → depth-based detection positioning. Supersedes #7 and #6.
+### 1. Close the min-dist gap (Phase 2 criterion of #9) · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
+Phases 1–4 of #9 are landed (safety layer, VLM steering, memory, depth-based detection positioning). Best `min_distance_to_target` so far is 1.91 m on seed 2; criterion is < 1.5 m on ≥ 1 seed. Suspected bottleneck: cloud VLM latency × commitment timeout caps approach attempts. Candidates to try: increase approach commitment timeout, raise `MAX_DISTANCE_M` for approach mode, lower `forward_veto_range_m` to let the robot creep closer, switch to a local VLM during approach.
 
 ### 2. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by #9.
+Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by closing the min-dist gap above.
 
 ---
 

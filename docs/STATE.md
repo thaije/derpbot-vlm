@@ -7,16 +7,19 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after Phase 2 of #9 (VLM steering + planner, wall-follow retired):**
+**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after Phases 1–4 of #9 (n=1 per cell — high variance, treat as directional):**
 
-| Seed | Target | Score | Exploration | Min dist | Collisions | Near-miss | TP/FP |
-|------|--------|-------|-------------|----------|------------|-----------|--------|
-| 1 | fire_extinguisher | **12.0** | 99.5% | 4.95m | **4** | 5 | 0/5 |
-| 2 | pipe_sewer_floor | **9.2** | 94.9% | **1.91m** | **6** | 3 | 0/0 |
+| Seed | Target | Score | Exploration | Min dist | Collisions | Near-miss | Precision | Notes |
+|------|--------|-------|-------------|----------|------------|-----------|-----------|-------|
+| 1 (P3 commit) | fire_extinguisher | 13.2 | 81% | 5.58m | 4 | 1 | — | mem in use, 46 m traveled |
+| 1 (P4 rerun) | fire_extinguisher | 6.4 | 99.8% | 3.87m | **21** | 4 | 1.0 | 0 detections this run; collisions spiked (variance) |
+| 2 (P3+P4) | pipe_sewer_floor | 10.4 | 81% | 2.34m | 6 | 2 | 1.0 | 0 detections (no FPs) |
 
 **Pre-Phase-2 baselines:** Phase 1 seed 1 score 4.0 / 11 collisions; Phase 1 seed 2 score 4.0 / 23 collisions.
 
-**Phase 2 outcome:** score improved 4→9-12, collisions dropped 11-23 → 4-6, exploration stayed ≥ 95%. Robot now navigates via VLM-chosen (heading ∈ {left,center,right}, distance ∈ [0,2] m) commitments rather than wall-follow. Min-dist criterion (<1.5 m) **not met** — seed 1 stalls at 4.95 m, seed 2 reaches 1.91 m. Robot is slow per cycle (~6-10 s commitment, ~3 s VLM latency) so it doesn't make many approach attempts. Phase 3 (visited-cells memory) and Phase 4 (depth-based detection positioning) are the next bottlenecks.
+**Phase 4 outcome:** depth-back-projected detection positioning + stable IDs landed. When VLM emits a bbox and the depth image is available, target is now plotted at its true map position (`agent/depth_projection.py`). Precision is no longer trivially 0; on runs where the VLM never fires (pipe_sewer_floor seed 2), precision is "1.0 over 0 detections" — true positives are still gated on the VLM actually seeing the target.
+
+**Outstanding gap:** Phase 2 pass criterion `min_dist < 1.5 m on ≥ 1 seed` not yet met (closest: 1.91 m seed 2). Bottleneck is approach throughput — cloud VLM cycle (~3 s wall) + commitment timeout (~6 s sim approach) limits attempts in the 300 s budget.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1m + valid detection.
 
@@ -25,19 +28,26 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 ## Architecture
 
 ```
-Camera+LiDAR(front) → VLM (cloud, ~1s interval, 0.5s in approach)
+Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach)
             ↓
   NavigationDecision: {target_visible, target_bbox, heading∈{L,C,R},
                        drive_distance_m∈[0,2], reason}
             ↓
   Planner: yaw_target = current_yaw + heading_offset (±30° / 0)
            commitment lifecycle: rotate-to-align → drive-to-distance → end
-           timeouts: 10 s normal, 6 s approach; ends on distance/deadline
+           timeouts: 10 s normal, 6 s approach
             ↓
   ReactiveSafetyLayer (20 Hz, owns /cmd_vel):
    - command(lin, ang) API
    - LiDAR forward veto: front<0.25 m → zero linear, slide toward open side
    - Bumper back-off: non-ground contact → 1.5 s reverse + rotate
+
+  On target_visible → _publish_detection(target, bbox):
+   - depth_projection.back_project_bbox(bbox, depth, K, x, y, yaw)
+     using /derpbot_0/rgbd/{depth_image,camera_info}.
+   - depth_projection.stable_track_id(class, x_map, y_map) — same physical
+     object across sightings shares an id.
+   - Falls back to robot pose if bbox/depth/K missing.
 ```
 
 **Planner constants** (`agent/planner.py`):
@@ -55,8 +65,12 @@ Camera+LiDAR(front) → VLM (cloud, ~1s interval, 0.5s in approach)
 
 **Detection publishing** (when target_visible=true):
 - Topic: `/derpbot_0/detections` (vision_msgs/Detection2DArray)
-- Content: class_id=target_object, position=robot_odom (Phase 4 will fix to depth-back-projected target position)
-- Validation requires: correct type, within 1.5 m of ground truth, line-of-sight
+- Position: depth-back-projected from VLM bbox center via camera intrinsics
+  (`agent/depth_projection.py`); falls back to robot odom only when bbox or
+  depth/K are missing.
+- Stable id: `f"{class}_{round(x,0.5)}_{round(y,0.5)}"`. Multiple sightings of
+  the same physical object share an id, so duplicates don't tank precision.
+- Validation requires: correct type, within 1.5 m of ground truth, line-of-sight.
 
 ---
 
@@ -70,10 +84,11 @@ Camera+LiDAR(front) → VLM (cloud, ~1s interval, 0.5s in approach)
 - **Sim speed affects VLM frequency.** At 3x speed, 300s sim = 100s wall time, only ~15 VLM queries.
 
 ### VLM / Ollama
-- **Cloud VLM detects target more often** (~3.5x) but all FPs — position is robot odom, not object location.
-- **Detection position must match ground truth within 1.5m.** Robot odom position used; detection at wrong position counts as FP.
+- **Cloud VLM detects target more often than local** (~3.5×) — fire_extinguisher reliably, pipe_sewer_floor almost never (floor textures).
+- **Detection position must match ground truth within 1.5 m.** Phase 4 back-projects from bbox + depth into the map frame; old "robot odom" fallback still applies when bbox/depth missing.
+- **VLM bboxes are in the 384-px max query image**, not the depth/native image — rescale before back-projecting (`_publish_detection` does this).
 - **Line-of-sight required.** Detection through walls counts as FP_LOS, not TP.
-- **Cloud models may return free text instead of JSON.** Parser handles both via `_parse_vlm_response`.
+- **Cloud models may return free text instead of JSON.** Parser handles strict / fenced / embedded / heuristic via `_parse_vlm_response`.
 - **`ollama signin` required before cloud models.** Run once; auth persists.
 
 ### Safety / Navigation
