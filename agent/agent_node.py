@@ -91,6 +91,9 @@ class AgentNode:
         from agent.planner import Planner
         self.planner = Planner()
 
+        from agent.memory import VisitedCells
+        self.memory = VisitedCells()
+
         from agent.vlm_client import VLMClient
         self.vlm = VLMClient(config)
 
@@ -149,13 +152,18 @@ class AgentNode:
         clearance_str = (
             "unknown" if clearance is None or math.isinf(clearance) else f"{clearance:.2f} m"
         )
+        x, y, yaw = self._get_odom()
+        memory_summary = self.memory.render_prompt_summary(x, y, yaw)
         return (
             f"Target: {target_obj}\n"
             f"Description: {target_desc}\n"
-            f"LiDAR front clearance: {clearance_str}\n\n"
+            f"LiDAR front clearance: {clearance_str}\n"
+            f"Memory (rays ahead, 0.5 m grid): {memory_summary}\n\n"
             "Look at the image. Decide:\n"
             "  - Is the target visible? If yes, fill target_bbox.\n"
             "  - Which heading (left/center/right) leads toward the target or open space?\n"
+            "  - When the target is NOT visible, prefer headings marked 'unexplored' over\n"
+            "    'mostly previously visited' to cover new ground.\n"
             "  - How far to drive in that heading (0.0-2.0 m). If front clearance is small,\n"
             "    pick a heading with more space and/or a short distance (≤ 0.5 m).\n"
             "Reply JSON only."
@@ -276,6 +284,7 @@ class AgentNode:
                     self.safety.command(0.0, 0.0)
                 else:
                     x, y, yaw = self._get_odom()
+                    self.memory.mark(x, y)
                     lin, ang = self.planner.compute_command(x, y, yaw, sim_now)
                     self.safety.command(lin, ang)
 
