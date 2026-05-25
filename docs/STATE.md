@@ -7,19 +7,18 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after Phases 1–4 of #9 (n=1 per cell — high variance, treat as directional):**
+**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after the latency-mitigation iteration (depth-distance commits + VLM pipelining):**
 
-| Seed | Target | Score | Exploration | Min dist | Collisions | Near-miss | Precision | Notes |
-|------|--------|-------|-------------|----------|------------|-----------|-----------|-------|
-| 1 (P3 commit) | fire_extinguisher | 13.2 | 81% | 5.58m | 4 | 1 | — | mem in use, 46 m traveled |
-| 1 (P4 rerun) | fire_extinguisher | 6.4 | 99.8% | 3.87m | **21** | 4 | 1.0 | 0 detections this run; collisions spiked (variance) |
-| 2 (P3+P4) | pipe_sewer_floor | 10.4 | 81% | 2.34m | 6 | 2 | 1.0 | 0 detections (no FPs) |
+| Seed | Target | Score | Exploration | Min dist | Collisions | Near-miss | Meters | Notes |
+|------|--------|-------|-------------|----------|------------|-----------|--------|-------|
+| 1 | fire_extinguisher | 4.0 | 99.1% | 3.09 m | 13 | 11 | 35.5 | 0 detections (target never seen) |
+| 2 | pipe_sewer_floor | 4.0 | 92.5% | **0.494 m** | 21 | 12 | 20.6 | **proximity_reached=True**, 0 detections |
 
-**Pre-Phase-2 baselines:** Phase 1 seed 1 score 4.0 / 11 collisions; Phase 1 seed 2 score 4.0 / 23 collisions.
+**Phase 2 criterion `min_dist < 1.5 m on ≥ 1 seed` met for the first time on seed 2.** Overall scores are still 4.0 because the VLM produced no valid detection of the floor pipe — mission completion needs both proximity AND a detection within 1.5 m of ground truth.
 
-**Phase 4 outcome:** depth-back-projected detection positioning + stable IDs landed. When VLM emits a bbox and the depth image is available, target is now plotted at its true map position (`agent/depth_projection.py`). Precision is no longer trivially 0; on runs where the VLM never fires (pipe_sewer_floor seed 2), precision is "1.0 over 0 detections" — true positives are still gated on the VLM actually seeing the target.
+**Earlier reference points (kept for trend):** Phase 1 seed 1 score 4.0 / 11 col; Phase 1 seed 2 score 4.0 / 23 col; Phase 3+P4 seed 1 score 13.2 / 4 col / 5.58 m; Phase 3+P4 seed 2 score 10.4 / 6 col / 2.34 m.
 
-**Outstanding gap:** Phase 2 pass criterion `min_dist < 1.5 m on ≥ 1 seed` not yet met (closest: 1.91 m seed 2). Bottleneck is approach throughput — cloud VLM cycle (~3 s wall) + commitment timeout (~6 s sim approach) limits attempts in the 300 s budget.
+**Outstanding gap:** detection rate of visually subtle targets (pipe_sewer_floor especially). When the VLM doesn't return `target_visible=true`, no detection is published and the mission fails regardless of where the robot is. Try a sharper target-aware prompt, multi-frame voting, or fall back to a heavier model for borderline frames.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1m + valid detection.
 
@@ -56,6 +55,11 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - `DEFAULT_COMMIT_TIMEOUT_S = 10.0`, `APPROACH_COMMIT_TIMEOUT_S = 6.0`
 - `APPROACH_DIST_M = 1.5` — target_visible + dist≤1.5 → approach mode
 - `MAX_DISTANCE_M = 2.0` (per issue #9 design)
+
+**agent_node loop constants** (`agent/agent_node.py`):
+- `VLM_INTERVAL_DEFAULT_S = 0.3`, `VLM_INTERVAL_APPROACH_S = 0.2` — min gap between submits
+- `COMMIT_REPLAN_FRACTION = 0.25` — submit next VLM query when commit 25% done so the result arrives near commit end (masks cloud latency)
+- `APPROACH_STANDOFF_M = 0.5` — when bbox+depth available, overrides VLM's drive_distance_m to `clamp(depth - 0.5, 0, MAX_DISTANCE_M)`
 
 **VLM (Ollama, cloud `gemma4:31b-cloud`):** Decision schema
 - Output: `{target_visible, target_bbox, heading, drive_distance_m, reason}`
@@ -98,6 +102,7 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Planner / wall-follow split: pick one or the other.** Pre-Phase-2 had both fighting (bumper back-off vs wall-follow re-commanding forward → 11→23 collisions on seed 2). Phase 2 retires wall-follow; only the planner drives, safety filters.
 - **Planner uses absolute yaw_target = current_yaw + heading_offset.** Cumulative VLM commits in one direction accumulate yaw absolutely — robot can spin past 180° if VLM repeatedly says "left".
 - **Tried but reverted in Phase 2:** post-back-off "clearing rotation" (worsened seed 1 to 21 collisions); planner no-progress watchdog with 1 s sim window (fired prematurely against simple rotation, slowed exploration); zero auto-slide in safety (robot deadlocked at walls within 80 s sim).
+- **Tried but reverted in latency-mitigation iteration:** graduated linear slowdown scaling `desired_lin` by front clearance between `[min_range_m, 0.6 m]`. Cut total motion, robot spent longer in the high-risk band, seed 2 regressed from min 0.49 m to 2.34 m with 34 near-misses.
 
 ---
 

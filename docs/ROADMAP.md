@@ -16,8 +16,8 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Close the min-dist gap (Phase 2 criterion of #9) · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
-Phases 1–4 of #9 are landed (safety layer, VLM steering, memory, depth-based detection positioning). Best `min_distance_to_target` so far is 1.91 m on seed 2; criterion is < 1.5 m on ≥ 1 seed. Suspected bottleneck: cloud VLM latency × commitment timeout caps approach attempts. Candidates to try: increase approach commitment timeout, raise `MAX_DISTANCE_M` for approach mode, lower `forward_veto_range_m` to let the robot creep closer, switch to a local VLM during approach.
+### 1. Boost VLM detection rate on subtle targets · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
+Latency-mitigation iteration landed (depth-distance commits + VLM pipelining): seed 2 now reaches min_dist 0.494 m with `proximity_reached=True` — the Phase 2 criterion is satisfied. Overall score is still 4.0 because the cloud VLM produced zero detections of `pipe_sewer_floor` across multiple runs, so no valid Detection2D ever lands. Next levers: target-aware prompt rewrites, multi-frame voting, fallback to a heavier model on borderline frames, or sharper bbox grounding requirements.
 
 ### 2. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
 Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by closing the min-dist gap above.
