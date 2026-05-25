@@ -10,12 +10,24 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+MAX_IMAGE_DIM = 768
+JPEG_QUALITY = 90
+
 SYSTEM_PROMPT = (
     "You are steering a robot through an indoor environment using a camera view."
     "\nFor every image, you must decide TWO things in one JSON response:"
     "\n  1. DETECT — is the target object visible?"
-    "\n     Set target_visible=true only if you clearly see the named target."
-    "\n     If true, fill target_bbox=[x1,y1,x2,y2] in pixel coordinates (image is up to 384x288)."
+    "\n     Scan the WHOLE image carefully — including the floor, corners, edges,"
+    "\n     along walls, and partly-occluded areas behind other objects."
+    "\n     Targets may appear SMALL (covering only a few percent of the image),"
+    "\n     LOW-CONTRAST (similar colour/material to the background), or PARTLY"
+    "\n     HIDDEN. The target name is a descriptive label, often underscored;"
+    "\n     accept any object that plausibly fits the description — synonyms,"
+    "\n     variants, partial views and side-on views all count."
+    "\n     Set target_visible=true if you see ANY object that could match."
+    "\n     If true, you MUST also fill target_bbox=[x1,y1,x2,y2] tightly around"
+    "\n     the object (top-left = (0,0))."
+    "\n     NEVER report target_visible=true without a bounding box."
     "\n  2. NAVIGATE — pick the next heading and how far to drive there."
     "\n     heading ∈ {\"left\" (~30° left), \"center\" (straight), \"right\" (~30° right)}."
     "\n     drive_distance_m ∈ [0.0, 2.0]. 0.0 = stop and rescan."
@@ -50,6 +62,10 @@ class VLMResult:
     drive_distance_m: float
     target_bbox: Optional[list[int]]
     reason: str
+    # Dimensions of the image actually sent to the VLM (after resize). Needed
+    # so callers can rescale target_bbox into other frames (e.g. depth image).
+    image_width: int = 0
+    image_height: int = 0
 
 
 _HEADING_TOKENS = {"left", "center", "right"}
@@ -202,14 +218,14 @@ class VLMClient:
         if self._client is None:
             raise RuntimeError("VLM client not started")
 
-        max_dim = 384
         w, h = image.size
-        if max(w, h) > max_dim:
-            scale = max_dim / max(w, h)
+        if max(w, h) > MAX_IMAGE_DIM:
+            scale = MAX_IMAGE_DIM / max(w, h)
             image = image.resize((int(w * scale), int(h * scale)))
+        sent_w, sent_h = image.size
 
         buf = io.BytesIO()
-        image.save(buf, format="JPEG", quality=70)
+        image.save(buf, format="JPEG", quality=JPEG_QUALITY)
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         for attempt in range(1, self.max_retries + 1):
@@ -233,9 +249,19 @@ class VLMClient:
 
                 result = _parse_vlm_response(raw)
                 if result is not None:
-                    logger.info("VLM: vis=%s hdg=%s dist=%.2f | %s",
+                    result.image_width = sent_w
+                    result.image_height = sent_h
+                    bbox_str = (
+                        f"[{result.target_bbox[0]},{result.target_bbox[1]},"
+                        f"{result.target_bbox[2]},{result.target_bbox[3]}]"
+                        if result.target_bbox else "None"
+                    )
+                    logger.info("VLM: vis=%s hdg=%s dist=%.2f bbox=%s img=%dx%d | %s",
                                 result.target_visible, result.heading,
-                                result.drive_distance_m, result.reason[:100])
+                                result.drive_distance_m, bbox_str,
+                                sent_w, sent_h, result.reason[:100])
+                    if result.target_visible and result.target_bbox is None:
+                        logger.warning("VLM raw (visible w/o bbox): %.500s", raw)
                     return result
                 logger.warning("VLM response unparseable (attempt %d/%d): %.200s", attempt, self.max_retries, raw)
 
@@ -249,4 +275,6 @@ class VLMClient:
             drive_distance_m=0.0,
             target_bbox=None,
             reason="VLM query failed after retries",
+            image_width=sent_w,
+            image_height=sent_h,
         )

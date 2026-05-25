@@ -16,8 +16,8 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Boost VLM detection rate on subtle targets · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
-Latency-mitigation iteration landed (depth-distance commits + VLM pipelining): seed 2 now reaches min_dist 0.494 m with `proximity_reached=True` — the Phase 2 criterion is satisfied. Overall score is still 4.0 because the cloud VLM produced zero detections of `pipe_sewer_floor` across multiple runs, so no valid Detection2D ever lands. Next levers: target-aware prompt rewrites, multi-frame voting, fallback to a heavier model on borderline frames, or sharper bbox grounding requirements.
+### 1. Close detection-position gap (VLM hallucinates same class far from GT) · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
+Detection-rate iteration landed (image res 768 + JPEG q90, Gemma 4 0-1000 bbox interpretation fixed, robot-pose FP fallback removed, prompt strengthened, target name naturalised). Pipe_sewer_floor is now visually recognised by the VLM for the first time (model labels it "white cylindrical pipe lying on the ground"). However, all published detections in the latest n=1-per-seed run are FP: model identifies the target *class* but localises a similar-looking shape 7–13 m from the actual ground truth. Same hallucinated world spot persists across multiple sightings, so simple temporal voting won't help. Next levers: depth-pattern consistency on the bbox (pipe = horizontal depth band; fire extinguisher = vertical narrow protrusion off a wall), gate publication on approach-distance ≤ proximity radius, or run a quick close-range confirmation prompt when proximity is hit.
 
 ### 2. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
 Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by closing the min-dist gap above.

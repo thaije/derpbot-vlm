@@ -181,6 +181,10 @@ class AgentNode:
     def _build_decision_prompt(self) -> str:
         target_obj = self._mission.get("target_object", "the target") if self._mission else "the target"
         target_desc = self._mission.get("target_description", "") if self._mission else ""
+        # Underscored class names confuse the VLM ("pipe_sewer_floor" → harder
+        # to match than "pipe sewer floor"). Expose both so the model can fall
+        # back on whichever it understands.
+        target_natural = target_obj.replace("_", " ") if isinstance(target_obj, str) else str(target_obj)
         clearance = self.safety.front_clearance_m()
         clearance_str = (
             "unknown" if clearance is None or math.isinf(clearance) else f"{clearance:.2f} m"
@@ -188,12 +192,16 @@ class AgentNode:
         x, y, yaw = self._get_odom()
         memory_summary = self.memory.render_prompt_summary(x, y, yaw)
         return (
-            f"Target: {target_obj}\n"
+            f"Target: {target_obj}  (natural language: \"{target_natural}\")\n"
             f"Description: {target_desc}\n"
             f"LiDAR front clearance: {clearance_str}\n"
             f"Memory (rays ahead, 0.5 m grid): {memory_summary}\n\n"
             "Look at the image. Decide:\n"
-            "  - Is the target visible? If yes, fill target_bbox.\n"
+            "  - Is the target visible? Scan floor, corners, walls, edges. The\n"
+            "    target may be small or low-contrast (e.g. a grey pipe on a grey\n"
+            "    floor, a dark object in shadow). If you see ANY object that\n"
+            "    plausibly matches the target, set target_visible=true and fill\n"
+            "    target_bbox.\n"
             "  - Which heading (left/center/right) leads toward the target or open space?\n"
             "  - When the target is NOT visible, prefer headings marked 'unexplored' over\n"
             "    'mostly previously visited' to cover new ground.\n"
@@ -202,13 +210,19 @@ class AgentNode:
             "Reply JSON only."
         )
 
-    def _project_target_from_bbox(self, bbox: list | None):
+    def _project_target_from_bbox(self, bbox: list | None,
+                                    vlm_image_w: int | None = None,
+                                    vlm_image_h: int | None = None):
         """Returns (x_map, y_map, depth_m) for the target bbox, or None.
 
-        Shared by detection publishing and approach-distance override. Handles
-        VLM bbox rescale (VLM sees max 384 px image; depth image is native).
+        Gemma 4 (cloud and e2b) emits bbox coordinates in its native 0-1000
+        normalized space, independent of input image resolution. We rescale
+        that 0-1000 box onto the depth image. ``vlm_image_w/h`` are accepted
+        for forward-compatibility (other VLMs may use pixel coords) but are
+        currently unused.
         """
-        if bbox is None:
+        del vlm_image_w, vlm_image_h  # reserved for future non-Gemma backends
+        if bbox is None or len(bbox) != 4:
             return None
         with self._depth_lock:
             depth = self._depth_image
@@ -217,44 +231,44 @@ class AgentNode:
         if depth is None or K is None:
             return None
 
-        with self._image_lock:
-            img_w = getattr(self, "_latest_image_width", None)
-            img_h = getattr(self, "_latest_image_height", None)
         d_h, d_w = depth.shape[:2]
-        if img_w and img_h and (img_w != d_w or img_h != d_h):
-            sx = d_w / float(img_w)
-            sy = d_h / float(img_h)
-            scaled = [int(bbox[0] * sx), int(bbox[1] * sy),
-                      int(bbox[2] * sx), int(bbox[3] * sy)]
-        else:
-            scaled = list(bbox)
+        sx = d_w / 1000.0
+        sy = d_h / 1000.0
+        scaled = [int(bbox[0] * sx), int(bbox[1] * sy),
+                  int(bbox[2] * sx), int(bbox[3] * sy)]
 
         from agent.depth_projection import back_project_bbox
         odom_x, odom_y, odom_yaw = self._get_odom()
         return back_project_bbox(scaled, depth, K, odom_x, odom_y, odom_yaw)
 
     def _publish_detection(self, target_type: str, bbox: list | None = None,
-                            proj: tuple[float, float, float] | None = None):
+                            proj: tuple[float, float, float] | None = None,
+                            vlm_image_w: int | None = None,
+                            vlm_image_h: int | None = None):
         if self._detection_pub is None:
             return
         from std_msgs.msg import Header
         from vision_msgs.msg import Detection2D, ObjectHypothesisWithPose
         from agent.depth_projection import stable_track_id
 
-        odom_x, odom_y, _ = self._get_odom()
+        if proj is None:
+            proj = self._project_target_from_bbox(bbox, vlm_image_w, vlm_image_h)
 
         if proj is None:
-            proj = self._project_target_from_bbox(bbox)
+            # Without a real (bbox + depth) projection we can't locate the
+            # target. The old "fallback to robot pose" produced almost-always
+            # false positives (robot pose ≠ target pose). Drop the detection
+            # so we don't pollute the submission log with FPs.
+            logger.info(
+                "DETECTION SUPPRESSED: %s — no bbox or depth projection "
+                "(bbox=%s, vlm_img=%sx%s)",
+                target_type, bbox, vlm_image_w, vlm_image_h,
+            )
+            return
 
-        if proj is not None:
-            tgt_x, tgt_y, est_depth = proj
-            track = stable_track_id(target_type, tgt_x, tgt_y)
-            log_extra = f"depth={est_depth:.2f}m"
-        else:
-            tgt_x, tgt_y = float(odom_x), float(odom_y)
-            self._detection_counter += 1
-            track = f"vlm_track_{self._detection_counter}"
-            log_extra = "no_depth/bbox (fallback to robot pose)"
+        tgt_x, tgt_y, est_depth = proj
+        track = stable_track_id(target_type, tgt_x, tgt_y)
+        log_extra = f"depth={est_depth:.2f}m"
 
         det = Detection2D()
         det.header = Header()
@@ -355,7 +369,11 @@ class AgentNode:
                         x, y, yaw = self._get_odom()
                         proj = None
                         if result.target_visible and result.target_bbox:
-                            proj = self._project_target_from_bbox(result.target_bbox)
+                            proj = self._project_target_from_bbox(
+                                result.target_bbox,
+                                result.image_width,
+                                result.image_height,
+                            )
                             if proj is not None:
                                 # Override VLM's guessed drive_distance_m with the
                                 # measured range-to-target minus a standoff so the
@@ -373,7 +391,11 @@ class AgentNode:
                         self.planner.accept_decision(result, yaw, x, y, sim_now)
                         if result.target_visible:
                             target_obj = self._mission.get("target_object", "unknown")
-                            self._publish_detection(target_obj, result.target_bbox, proj=proj)
+                            self._publish_detection(
+                                target_obj, result.target_bbox, proj=proj,
+                                vlm_image_w=result.image_width,
+                                vlm_image_h=result.image_height,
+                            )
 
                 # Drive: planner → safety
                 if self.planner.is_idle() or self.safety.is_blocked():

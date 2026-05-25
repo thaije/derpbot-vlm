@@ -7,18 +7,18 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after the latency-mitigation iteration (depth-distance commits + VLM pipelining):**
+**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after the detection-rate iteration (image resolution + bbox-convention fix + suppressed FP fallback):**
 
-| Seed | Target | Score | Exploration | Min dist | Collisions | Near-miss | Meters | Notes |
-|------|--------|-------|-------------|----------|------------|-----------|--------|-------|
-| 1 | fire_extinguisher | 4.0 | 99.1% | 3.09 m | 13 | 11 | 35.5 | 0 detections (target never seen) |
-| 2 | pipe_sewer_floor | 4.0 | 92.5% | **0.494 m** | 21 | 12 | 20.6 | **proximity_reached=True**, 0 detections |
+| Seed | Target | Score | Exploration | Min dist | Collisions | Detections | Notes |
+|------|--------|-------|-------------|----------|------------|------------|-------|
+| 1 | fire_extinguisher | 6.8 | 96.6% | 2.37 m | 8 | 4 (all FP) | VLM saw target 4×; positions 7–13 m off GT |
+| 2 | pipe_sewer_floor | 9.2 | 83.5% | 2.34 m | 9 | 3 (all FP) | **First-ever VLM detection of the floor pipe** — model called it "white cylindrical pipe lying on the ground", but world position ~12 m off GT |
 
-**Phase 2 criterion `min_dist < 1.5 m on ≥ 1 seed` met for the first time on seed 2.** Overall scores are still 4.0 because the VLM produced no valid detection of the floor pipe — mission completion needs both proximity AND a detection within 1.5 m of ground truth.
+**Headline change vs prior iteration:** detection rate is non-zero on both seeds; pipe_sewer_floor is now visually recognised (was 0× ever). All published detections are still FP — the model identifies the target *visual class* but locates a similar-looking shape (wall edge, floor seam) elsewhere in the scene. Robot-pose fallback (which guaranteed FPs) is removed.
 
-**Earlier reference points (kept for trend):** Phase 1 seed 1 score 4.0 / 11 col; Phase 1 seed 2 score 4.0 / 23 col; Phase 3+P4 seed 1 score 13.2 / 4 col / 5.58 m; Phase 3+P4 seed 2 score 10.4 / 6 col / 2.34 m.
+**Earlier reference points (trend):** Latency-mitigation seed 1 score 4.0 / 13 col / min 3.09 m / 0 det; seed 2 score 4.0 / 21 col / min 0.494 m (proximity reached) / 0 det. Phase 3+P4 seed 1 score 13.2 / 4 col; Phase 3+P4 seed 2 score 10.4 / 6 col.
 
-**Outstanding gap:** detection rate of visually subtle targets (pipe_sewer_floor especially). When the VLM doesn't return `target_visible=true`, no detection is published and the mission fails regardless of where the robot is. Try a sharper target-aware prompt, multi-frame voting, or fall back to a heavier model for borderline frames.
+**Outstanding gap:** detection *position* accuracy. The VLM gets the visual class right but hallucinates similar shapes far from the actual target. Likely levers: depth-pattern consistency check (a pipe should have a horizontal depth band; a wall edge has a depth step), multi-frame world-position consensus across DIFFERENT robot poses (not just sightings of the same hallucinated spot), or stricter requirement that approach-distance match GT proximity radius before publishing.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1m + valid detection.
 
@@ -63,15 +63,24 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 
 **VLM (Ollama, cloud `gemma4:31b-cloud`):** Decision schema
 - Output: `{target_visible, target_bbox, heading, drive_distance_m, reason}`
+- `VLMResult` also carries `image_width/image_height` — the dimensions of the
+  image actually sent (after the `MAX_IMAGE_DIM` resize), so callers can
+  rescale `target_bbox` into other frames.
 - Prompt includes LiDAR front clearance so VLM picks shorter distances near walls
+- Target name shown twice: raw (`pipe_sewer_floor`) AND natural (`pipe sewer floor`) so VLM doesn't trip on the underscored class name
+- Detection-side prompt: "scan floor, corners, walls, edges; targets may be small / low-contrast / partly hidden; MUST include bbox when target_visible=true"
+- Image sent at up to **768 px** max dim, JPEG quality 90 (was 384 / q70). Camera is 640×480 so in practice no upscale happens.
 - Response parser: strict JSON → code-fenced → embedded → heuristic free-text fallback
-- VLM cycle (agent_node): submit when planner idle (immediate replan) OR in approach mode at ≥60% commit progress and `vlm_interval_s` elapsed (1.0 default, 0.5 approach)
+- VLM cycle (agent_node): submit when planner idle (immediate replan) OR mid-commit past 25% progress and `vlm_interval_s` elapsed (0.3 default, 0.2 approach)
+- `options.temperature = 0.3`
 
 **Detection publishing** (when target_visible=true):
 - Topic: `/derpbot_0/detections` (vision_msgs/Detection2DArray)
+- Bbox interpretation: **Gemma 4 0-1000 normalised coords** (`agent_node._project_target_from_bbox` rescales 0-1000 → depth dims directly; does NOT use the input-image pixel dims, which was the prior bug).
 - Position: depth-back-projected from VLM bbox center via camera intrinsics
-  (`agent/depth_projection.py`); falls back to robot odom only when bbox or
-  depth/K are missing.
+  (`agent/depth_projection.py`).
+- **Suppressed when projection fails.** No more robot-pose fallback — it was
+  a guaranteed FP (robot pose ≠ target pose).
 - Stable id: `f"{class}_{round(x,0.5)}_{round(y,0.5)}"`. Multiple sightings of
   the same physical object share an id, so duplicates don't tank precision.
 - Validation requires: correct type, within 1.5 m of ground truth, line-of-sight.
@@ -88,12 +97,17 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Sim speed affects VLM frequency.** At 3x speed, 300s sim = 100s wall time, only ~15 VLM queries.
 
 ### VLM / Ollama
-- **Cloud VLM detects target more often than local** (~3.5×) — fire_extinguisher reliably, pipe_sewer_floor almost never (floor textures).
-- **Detection position must match ground truth within 1.5 m.** Phase 4 back-projects from bbox + depth into the map frame; old "robot odom" fallback still applies when bbox/depth missing.
-- **VLM bboxes are in the 384-px max query image**, not the depth/native image — rescale before back-projecting (`_publish_detection` does this).
+- **Cloud VLM detects target more often than local** (~3.5×) — fire_extinguisher reliably, pipe_sewer_floor was 0× ever until this iteration (now seen, but at wrong world position).
+- **Detection position must match ground truth within 1.5 m.** Bbox + depth back-projects into the map frame; published only when projection succeeds.
+- **Gemma 4 emits bbox coords in 0-1000 normalised space, regardless of input image size.** Order is `[x1, y1, x2, y2]` per our prompt. Rescale 0-1000 → depth dims directly (`agent_node._project_target_from_bbox`). Treating these as input-image pixels was a silent bug that clamped most bboxes off-image.
+- **Robot-pose fallback for detection position is removed.** When bbox/depth/K is missing we suppress the detection rather than publishing at robot pose — the fallback was an FP machine (robot pose ≠ target pose).
+- **`MAX_IMAGE_DIM = 768`, JPEG quality 90.** Bumped from 384/q70 for small-object recall. DerpBot camera is 640×480 so this means "no downscale, less compression" today; only matters if we ever raise camera res.
+- **Mentioning the coord system in the prompt ("Gemma convention", "0-1000 normalized") suppressed detections to zero** on a 300 s run (tried 2026-05-25). Keep the prompt domain-language only; let the model use its native scale.
+- **`temperature=0.1` is too conservative for VLM-driven exploration.** Seed 2 trial: 3.7 m traveled, 10 queries in 300 s, 0 detections. Keep at 0.3.
 - **Line-of-sight required.** Detection through walls counts as FP_LOS, not TP.
 - **Cloud models may return free text instead of JSON.** Parser handles strict / fenced / embedded / heuristic via `_parse_vlm_response`.
 - **`ollama signin` required before cloud models.** Run once; auth persists.
+- **Detection currently FP-biased.** The VLM correctly identifies the target's visual class but localises a similar-looking shape elsewhere (wall edge, floor seam) in the scene. Multi-frame voting on the *same hallucinated spot* doesn't help — observed three sightings collapsing to the same wrong world position.
 
 ### Safety / Navigation
 - **`ReactiveSafetyLayer` owns `/cmd_vel`.** Upstream callers (planner) use `safety.command(lin, ang)`; safety publishes the filtered twist at 20 Hz from its own ROS timer. Direct publishes elsewhere would race with the timer.
