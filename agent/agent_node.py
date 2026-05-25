@@ -20,9 +20,10 @@ logger = logging.getLogger("agent_node")
 
 READY_FLAG = os.environ.get("DERPBOT_READY_FLAG", "/tmp/derpbot_agent_ready")
 
-VLM_INTERVAL_DEFAULT_S = 1.0
-VLM_INTERVAL_APPROACH_S = 0.5
-COMMIT_REPLAN_FRACTION = 0.6
+VLM_INTERVAL_DEFAULT_S = 0.3
+VLM_INTERVAL_APPROACH_S = 0.2
+COMMIT_REPLAN_FRACTION = 0.25
+APPROACH_STANDOFF_M = 0.5  # stop this far short of the target when range is known
 
 
 def load_config(path: str = "config/vlm_config.yaml") -> dict:
@@ -201,45 +202,54 @@ class AgentNode:
             "Reply JSON only."
         )
 
-    def _publish_detection(self, target_type: str, bbox: list | None = None):
-        if self._detection_pub is None:
-            return
-        from std_msgs.msg import Header
-        from vision_msgs.msg import Detection2D, ObjectHypothesisWithPose
-        from agent.depth_projection import back_project_bbox, stable_track_id
+    def _project_target_from_bbox(self, bbox: list | None):
+        """Returns (x_map, y_map, depth_m) for the target bbox, or None.
 
-        odom_x, odom_y, odom_yaw = self._get_odom()
-
-        # Try depth-based positioning. Fall back to robot pose (counts as FP
-        # if too far from ground truth — that's the Phase 4 known limitation
-        # when depth or bbox is missing).
+        Shared by detection publishing and approach-distance override. Handles
+        VLM bbox rescale (VLM sees max 384 px image; depth image is native).
+        """
+        if bbox is None:
+            return None
         with self._depth_lock:
             depth = self._depth_image
         with self._camera_K_lock:
             K = self._camera_K
+        if depth is None or K is None:
+            return None
 
-        proj = None
-        scaled_bbox = bbox
-        if bbox is not None and depth is not None and K is not None:
-            # The VLM sees a resized image (max 384 px). Bboxes from the VLM
-            # are in that resized frame; rescale to depth-image dimensions.
-            with self._image_lock:
-                img_w = getattr(self, "_latest_image_width", None)
-                img_h = getattr(self, "_latest_image_height", None)
-            d_h, d_w = depth.shape[:2]
-            if img_w and img_h and (img_w != d_w or img_h != d_h):
-                sx = d_w / float(img_w)
-                sy = d_h / float(img_h)
-                scaled_bbox = [
-                    int(bbox[0] * sx), int(bbox[1] * sy),
-                    int(bbox[2] * sx), int(bbox[3] * sy),
-                ]
-            proj = back_project_bbox(scaled_bbox, depth, K, odom_x, odom_y, odom_yaw)
+        with self._image_lock:
+            img_w = getattr(self, "_latest_image_width", None)
+            img_h = getattr(self, "_latest_image_height", None)
+        d_h, d_w = depth.shape[:2]
+        if img_w and img_h and (img_w != d_w or img_h != d_h):
+            sx = d_w / float(img_w)
+            sy = d_h / float(img_h)
+            scaled = [int(bbox[0] * sx), int(bbox[1] * sy),
+                      int(bbox[2] * sx), int(bbox[3] * sy)]
+        else:
+            scaled = list(bbox)
+
+        from agent.depth_projection import back_project_bbox
+        odom_x, odom_y, odom_yaw = self._get_odom()
+        return back_project_bbox(scaled, depth, K, odom_x, odom_y, odom_yaw)
+
+    def _publish_detection(self, target_type: str, bbox: list | None = None,
+                            proj: tuple[float, float, float] | None = None):
+        if self._detection_pub is None:
+            return
+        from std_msgs.msg import Header
+        from vision_msgs.msg import Detection2D, ObjectHypothesisWithPose
+        from agent.depth_projection import stable_track_id
+
+        odom_x, odom_y, _ = self._get_odom()
+
+        if proj is None:
+            proj = self._project_target_from_bbox(bbox)
 
         if proj is not None:
             tgt_x, tgt_y, est_depth = proj
             track = stable_track_id(target_type, tgt_x, tgt_y)
-            log_extra = f"depth={est_depth:.2f}m bbox_scaled={scaled_bbox}"
+            log_extra = f"depth={est_depth:.2f}m"
         else:
             tgt_x, tgt_y = float(odom_x), float(odom_y)
             self._detection_counter += 1
@@ -343,10 +353,27 @@ class AgentNode:
 
                     if result is not None:
                         x, y, yaw = self._get_odom()
+                        proj = None
+                        if result.target_visible and result.target_bbox:
+                            proj = self._project_target_from_bbox(result.target_bbox)
+                            if proj is not None:
+                                # Override VLM's guessed drive_distance_m with the
+                                # measured range-to-target minus a standoff so the
+                                # robot stops just short of the proximity radius.
+                                _, _, depth_m = proj
+                                adjusted = max(0.0, depth_m - APPROACH_STANDOFF_M)
+                                # Cap at 2 m commit but allow up to that even if
+                                # VLM guessed something smaller.
+                                from agent.planner import MAX_DISTANCE_M
+                                result.drive_distance_m = min(MAX_DISTANCE_M, adjusted)
+                                logger.info(
+                                    "DEPTH OVERRIDE: target depth=%.2fm → commit %.2fm",
+                                    depth_m, result.drive_distance_m,
+                                )
                         self.planner.accept_decision(result, yaw, x, y, sim_now)
                         if result.target_visible:
                             target_obj = self._mission.get("target_object", "unknown")
-                            self._publish_detection(target_obj, result.target_bbox)
+                            self._publish_detection(target_obj, result.target_bbox, proj=proj)
 
                 # Drive: planner → safety
                 if self.planner.is_idle() or self.safety.is_blocked():
@@ -357,18 +384,19 @@ class AgentNode:
                     lin, ang = self.planner.compute_command(x, y, yaw, sim_now)
                     self.safety.command(lin, ang)
 
-                # Issue next VLM query. Trigger immediately when:
-                #   - planner just went idle (commitment ended → fresh decision needed), OR
-                #   - committed and past replan fraction in approach mode.
+                # Issue next VLM query. We pipeline:
+                #   - planner idle (commitment ended) → immediate replan
+                #   - mid-commit past the replan fraction → submit so the next
+                #     decision arrives just as this one finishes, masking the
+                #     ~3 s cloud-VLM latency instead of waiting idle for it.
                 vlm_interval = (
                     VLM_INTERVAL_APPROACH_S if self.planner.in_approach() else VLM_INTERVAL_DEFAULT_S
                 )
                 if self._vlm_future is None:
                     should = False
                     if self.planner.is_idle():
-                        # immediate replan on any commitment end (deadline / no_progress / reached)
                         should = True
-                    elif self.planner.in_approach() and self._commit_progress(sim_now) >= COMMIT_REPLAN_FRACTION:
+                    elif self._commit_progress(sim_now) >= COMMIT_REPLAN_FRACTION:
                         should = (sim_now - last_vlm_sim_s) >= vlm_interval
                     if should:
                         self._submit_vlm_query()
