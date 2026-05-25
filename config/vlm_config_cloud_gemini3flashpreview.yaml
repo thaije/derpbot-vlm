@@ -1,0 +1,41 @@
+model:
+  name: gemini-3-flash-preview:cloud
+  backend: ollama-cloud
+
+inference:
+  rate_hz: 0.5
+  max_retries: 3
+  timeout_s: 60.0
+
+actions:
+  forward:
+    linear_x: 0.5
+    angular_z: 0.0
+  backward:
+    linear_x: -0.3
+    angular_z: 0.0
+  left:
+    linear_x: 0.0
+    angular_z: 0.6
+  right:
+    linear_x: 0.0
+    angular_z: -0.6
+  stop:
+    linear_x: 0.0
+    angular_z: 0.0
+  _publish_interval_s: 0.1
+
+safety:
+  min_range_m: 0.25
+  forward_arc_deg: 30
+
+ros:
+  camera_topic: /derpbot_0/rgbd/image
+  depth_topic: /derpbot_0/rgbd/depth_image
+  lidar_topic: /derpbot_0/scan
+  odom_topic: /derpbot_0/odom
+  cmd_vel_topic: /derpbot_0/cmd_vel
+  bumper_topic: /derpbot_0/bumper_contact
+  detection_topic: /derpbot_0/detections
+  mission_url: http://localhost:7400/mission
+  use_sim_time: true

@@ -118,6 +118,14 @@ class AgentNode:
         from agent.vlm_client import VLMClient
         self.vlm = VLMClient(config)
 
+        # Verifier toggle (#10 / #11) — defaults to ENABLED. Set
+        #   verifier:
+        #     enabled: false
+        # in the config to disable, e.g. for A/B with-vs-without runs.
+        verifier_cfg = config.get("verifier") or {}
+        self._verifier_enabled = bool(verifier_cfg.get("enabled", True))
+        logger.info("Verifier: %s", "ENABLED" if self._verifier_enabled else "DISABLED")
+
         self._detection_pub = None
         self._detection_class = None
         det_topic = ros_cfg.get("detection_topic")
@@ -257,20 +265,26 @@ class AgentNode:
             crop = crop.resize((int(cw * scale), int(ch * scale)))
         return crop
 
-    def _verify_detection(self, bbox: list, target_obj: str) -> bool:
-        """Crop + skeptical second VLM call. Returns True iff the verifier
-        confirms the candidate. Synchronous — the cloud VLM round-trip is the
-        same ~3 s as a normal query, and candidates are rare."""
+    def _verify_detection(self, bbox: list, target_obj: str) -> tuple[bool, str]:
+        """Crop + skeptical second VLM call. Returns (confirmed, reason).
+
+        Synchronous — the cloud VLM round-trip is the same ~3 s as a normal
+        query, and candidates are rare. Reason is the verifier's explanation
+        (or a sentinel describing why the verifier was skipped/failed) so
+        callers can log it in the structured CANDIDATE line.
+        """
+        if not self._verifier_enabled:
+            return True, "verifier disabled"
         crop = self._crop_candidate(bbox)
         if crop is None:
             logger.warning("VERIFY: no crop available for bbox=%s — rejecting", bbox)
-            return False
+            return False, "no crop"
         res = self.vlm.verify_candidate(crop, target_obj)
-        confirmed = bool(res and res.confirmed)
-        if not confirmed:
-            reason = (res.reason if res else "verifier failed") or ""
-            logger.info("VERIFY REJECT: %s — %s", target_obj, reason[:160])
-        return confirmed
+        if res is None:
+            return False, "verifier returned None"
+        if not res.confirmed:
+            logger.info("VERIFY REJECT: %s — %s", target_obj, res.reason[:160])
+        return bool(res.confirmed), res.reason or ""
 
     def _project_target_from_bbox(self, bbox: list | None,
                                     vlm_image_w: int | None = None,
@@ -457,7 +471,26 @@ class AgentNode:
                             # the candidate is treated as "not seen" so we
                             # don't commit cycles to driving toward an FP.
                             target_obj = self._mission.get("target_object", "unknown")
-                            verified = self._verify_detection(result.target_bbox, target_obj)
+                            verified, verify_reason = self._verify_detection(
+                                result.target_bbox, target_obj)
+                            # Structured per-candidate log for post-hoc analysis
+                            # (#11). Grep "CANDIDATE:" to recover every
+                            # detector candidate with bbox + projected world
+                            # position + verifier verdict. Distance to the
+                            # nearest GT object can be computed offline from
+                            # the result file's ground_truth_objects.
+                            if proj is not None:
+                                px, py, pd = proj
+                                proj_str = f"({px:.2f},{py:.2f})@{pd:.2f}m"
+                            else:
+                                proj_str = "NONE"
+                            logger.info(
+                                "CANDIDATE: target=%s bbox=%s proj=%s "
+                                "verifier=%s reason=%r",
+                                target_obj, result.target_bbox, proj_str,
+                                "ACCEPT" if verified else "REJECT",
+                                verify_reason[:120],
+                            )
                             if not verified:
                                 result.target_visible = False
                                 result.target_bbox = None
