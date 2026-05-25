@@ -1,26 +1,34 @@
 # STATE — derpbot-vlm
 
-VLM-steered agent: VLM picks (heading, distance) per query, planner executes commitments, reactive safety layer owns cmd_vel. No Nav2, no SLAM, no wall-follow.
+VLM-steered agent: VLM picks (heading, distance) per query, planner executes commitments, reactive safety layer owns cmd_vel. Each candidate detection passes through a skeptical second VLM call (verifier, #10) before it is published or before the planner enters approach mode. No Nav2, no SLAM, no wall-follow.
 Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); history lives in GitHub issues + commits.
 
 ---
 
 ## Current performance
 
-**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after the detection-rate iteration (image resolution + bbox-convention fix + suppressed FP fallback):**
+**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after the verifier landed (#10) — n=1 per seed on this batch:**
 
-| Seed | Target | Score | Exploration | Min dist | Collisions | Detections | Notes |
-|------|--------|-------|-------------|----------|------------|------------|-------|
-| 1 | fire_extinguisher | 6.8 | 96.6% | 2.37 m | 8 | 4 (all FP) | VLM saw target 4×; positions 7–13 m off GT |
-| 2 | pipe_sewer_floor | 9.2 | 83.5% | 2.34 m | 9 | 3 (all FP) | **First-ever VLM detection of the floor pipe** — model called it "white cylindrical pipe lying on the ground", but world position ~12 m off GT |
+| Seed | Target | Score | Exploration | Min dist | Collisions | Detections / FP | Notes |
+|------|--------|-------|-------------|----------|------------|-----------------|-------|
+| 1 | fire_extinguisher | 9.2 | 83.0 % | 5.58 m | 6 | 0 / 0 | Cloud detector returned `target_visible=false` on every one of 8 queries — no candidate reached the verifier |
+| 2 | pipe_sewer_floor | 9.2 | 98.0 % | **0.59 m** | 6 | 0 / 0 | Robot passed within 0.6 m of GT but detector still returned no candidate |
 
-**Headline change vs prior iteration:** detection rate is non-zero on both seeds; pipe_sewer_floor is now visually recognised (was 0× ever). All published detections are still FP — the model identifies the target *visual class* but locates a similar-looking shape (wall edge, floor seam) elsewhere in the scene. Robot-pose fallback (which guaranteed FPs) is removed.
+**Synthetic verifier smoke test (3 hand-crafted crops):** verifier correctly rejected stylised red bar, blank grey square, and grey horizontal rectangle against `fire_extinguisher` and `pipe_sewer_floor` prompts, listing concrete mismatching features ("rectangular shape, lack of nozzle/handle, lack of pressure gauge"; "no cylindrical shape, no pipe characteristics"). Wiring + parser + prompt all work.
 
-**Earlier reference points (trend):** Latency-mitigation seed 1 score 4.0 / 13 col / min 3.09 m / 0 det; seed 2 score 4.0 / 21 col / min 0.494 m (proximity reached) / 0 det. Phase 3+P4 seed 1 score 13.2 / 4 col; Phase 3+P4 seed 2 score 10.4 / 6 col.
+**Headline change vs prior iteration:** verifier landed; FP count dropped to 0/0 across both seeds — but the detector also produced 0 candidates this run, so the FP drop is not attributable to the verifier yet. Cloud VLM was visibly slow today (13–30 s per query vs prior ~3 s), starving the runs of candidates. Re-run on a normal-latency day before drawing conclusions.
 
-**Outstanding gap:** detection *position* accuracy. The VLM gets the visual class right but hallucinates similar shapes far from the actual target. Likely levers: depth-pattern consistency check (a pipe should have a horizontal depth band; a wall edge has a depth step), multi-frame world-position consensus across DIFFERENT robot poses (not just sightings of the same hallucinated spot), or stricter requirement that approach-distance match GT proximity radius before publishing.
+**Trend over recent iterations (n=1 per seed):**
 
-**Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1m + valid detection.
+| Iteration | Seed 1 score | Seed 2 score | Seed 1 detections | Seed 2 detections |
+|---|---|---|---|---|
+| Latency mitigation (0d30927) | 4.0 | 4.0 | 0 | 0 |
+| Detection rate (4100be2) | 6.8 | 9.2 | 4 / 4 FP | 3 / 3 FP |
+| Verifier (this) | 9.2 | 9.2 | 0 / 0 | 0 / 0 |
+
+**Outstanding work:** evaluate verifier on a run where the detector actually produces candidates. Synthetic test shows the verifier is strict (possibly too strict on small / low-detail crops); if real-run candidates all get rejected we'll have to soften the prompt or trade strictness for recall. Until then, treat the verifier as plumbing that is provably correct end-to-end but not yet measured against real FPs.
+
+**Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1 m + valid detection.
 
 ---
 
@@ -41,12 +49,16 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
    - LiDAR forward veto: front<0.25 m → zero linear, slide toward open side
    - Bumper back-off: non-ground contact → 1.5 s reverse + rotate
 
-  On target_visible → _publish_detection(target, bbox):
-   - depth_projection.back_project_bbox(bbox, depth, K, x, y, yaw)
-     using /derpbot_0/rgbd/{depth_image,camera_info}.
-   - depth_projection.stable_track_id(class, x_map, y_map) — same physical
-     object across sightings shares an id.
-   - Falls back to robot pose if bbox/depth/K missing.
+  On target_visible + bbox:
+   - _verify_detection(bbox, target):
+       crop raw camera image (bbox + 20 % pad, upscale ≥ 224 px) →
+       VLMClient.verify_candidate(crop, target) → skeptical 2nd call →
+       confirmed ? proceed : demote target_visible=False, no publish
+   - If confirmed → _publish_detection(target, bbox):
+       depth_projection.back_project_bbox(bbox, depth, K, x, y, yaw)
+       using /derpbot_0/rgbd/{depth_image,camera_info};
+       suppressed when projection fails (no robot-pose fallback);
+       stable_track_id(class, x_map, y_map) so repeat sightings share an id.
 ```
 
 **Planner constants** (`agent/planner.py`):
@@ -75,6 +87,14 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - `options.temperature = 0.3`
 
 **Detection publishing** (when target_visible=true):
+- **Verifier gate (#10).** Every candidate is cropped from the raw camera
+  frame (bbox + 20 % padding, upscaled to ≥ 224 px on the long edge) and sent
+  through a second VLM call (`VLMClient.verify_candidate`) with a skeptical
+  system prompt that defaults to REJECT and requires the model to list
+  matching AND mismatching features. Only `confirmed=True` candidates are
+  published; rejected candidates also have `target_visible` demoted to false
+  so the planner doesn't enter approach mode chasing an FP. Verifier uses
+  `temperature=0.1`. Cost: +1 cloud round-trip per candidate (~3 s).
 - Topic: `/derpbot_0/detections` (vision_msgs/Detection2DArray)
 - Bbox interpretation: **Gemma 4 0-1000 normalised coords** (`agent_node._project_target_from_bbox` rescales 0-1000 → depth dims directly; does NOT use the input-image pixel dims, which was the prior bug).
 - Position: depth-back-projected from VLM bbox center via camera intrinsics
@@ -107,7 +127,10 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Line-of-sight required.** Detection through walls counts as FP_LOS, not TP.
 - **Cloud models may return free text instead of JSON.** Parser handles strict / fenced / embedded / heuristic via `_parse_vlm_response`.
 - **`ollama signin` required before cloud models.** Run once; auth persists.
-- **Detection currently FP-biased.** The VLM correctly identifies the target's visual class but localises a similar-looking shape elsewhere (wall edge, floor seam) in the scene. Multi-frame voting on the *same hallucinated spot* doesn't help — observed three sightings collapsing to the same wrong world position.
+- **Detection currently FP-biased.** The VLM correctly identifies the target's visual class but localises a similar-looking shape elsewhere (wall edge, floor seam) in the scene. Multi-frame voting on the *same hallucinated spot* doesn't help — observed three sightings collapsing to the same wrong world position. Verifier (#10) is the current mitigation.
+- **Verifier prompt asymmetry is intentional.** Detector prompt rewards aggressive scanning ("see anything that fits"); verifier prompt rewards skepticism ("default to reject, list counter-evidence"). Mentioning calibration / framing terminology to the model breaks it (see "Gemma convention" failure above); keep both prompts in plain domain language.
+- **Verifier failure path defaults to REJECT.** If the verifier call errors or returns unparseable JSON, the candidate is rejected (safer for FP than letting it through). This means cloud outages will block detections entirely — accept that trade-off until / unless we run a local-VLM fallback.
+- **Verifier blocks the agent main loop for one cloud round-trip per candidate** (~3 s on a healthy cloud, 30+ s on a bad day). Safety layer keeps publishing at 20 Hz from its own ROS timer during the stall, so collisions are still filtered. If verifier latency dominates a mission budget, move it to the same ThreadPoolExecutor as the detector query.
 
 ### Safety / Navigation
 - **`ReactiveSafetyLayer` owns `/cmd_vel`.** Upstream callers (planner) use `safety.command(lin, ang)`; safety publishes the filtered twist at 20 Hz from its own ROS timer. Direct publishes elsewhere would race with the timer.

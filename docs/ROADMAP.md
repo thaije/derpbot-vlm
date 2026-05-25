@@ -16,11 +16,14 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Close detection-position gap (VLM hallucinates same class far from GT) · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
-Detection-rate iteration landed (image res 768 + JPEG q90, Gemma 4 0-1000 bbox interpretation fixed, robot-pose FP fallback removed, prompt strengthened, target name naturalised). Pipe_sewer_floor is now visually recognised by the VLM for the first time (model labels it "white cylindrical pipe lying on the ground"). However, all published detections in the latest n=1-per-seed run are FP: model identifies the target *class* but localises a similar-looking shape 7–13 m from the actual ground truth. Same hallucinated world spot persists across multiple sightings, so simple temporal voting won't help. Next levers: depth-pattern consistency on the bbox (pipe = horizontal depth band; fire extinguisher = vertical narrow protrusion off a wall), gate publication on approach-distance ≤ proximity radius, or run a quick close-range confirmation prompt when proximity is hit.
+### 1. Skeptical second-call verification of VLM detections · [#10](https://github.com/thaije/derpbot-vlm/issues/10)
+Detection rate is unblocked but FP-heavy (see #9 final comment) — the VLM identifies the target's visual class correctly, then localises a similar shape elsewhere in the scene. Add a VLM-only verifier: crop the candidate bbox, upscale, fire a second VLM call with a skeptical "list counter-evidence" prompt, and only publish detections the verifier confirms. Same model, no new dependencies, no extra reliance on depth/lidar.
 
-### 2. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by closing the min-dist gap above.
+### 2. Detection-rate work from #9 — kept open for trend tracking · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
+Latest iteration recorded (4100be2). Seed 1: 4.0 → 6.8. Seed 2: 4.0 → 9.2. First-ever VLM recognition of `pipe_sewer_floor`. All published detections still FP — work moves to #10.
+
+### 3. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
+Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by closing the FP gap above.
 
 ---
 

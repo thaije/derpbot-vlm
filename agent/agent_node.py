@@ -25,6 +25,12 @@ VLM_INTERVAL_APPROACH_S = 0.2
 COMMIT_REPLAN_FRACTION = 0.25
 APPROACH_STANDOFF_M = 0.5  # stop this far short of the target when range is known
 
+# Verifier (#10): when the detector flags target_visible=true, crop the bbox
+# region + a margin, upscale if needed, and run a second skeptical VLM call
+# before publishing.
+VERIFY_BBOX_PAD_FRAC = 0.20    # 20 % padding around bbox before cropping
+VERIFY_MIN_CROP_PX = 224       # upscale crops smaller than this on the long edge
+
 
 def load_config(path: str = "config/vlm_config.yaml") -> dict:
     config_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -210,6 +216,62 @@ class AgentNode:
             "Reply JSON only."
         )
 
+    def _crop_candidate(self, bbox: list, pad_frac: float = VERIFY_BBOX_PAD_FRAC,
+                          min_px: int = VERIFY_MIN_CROP_PX):
+        """Crop the candidate bbox from the latest camera image, with padding,
+        and upscale tiny crops on the long edge. Returns a PIL.Image or None.
+
+        bbox is in Gemma's 0-1000 normalised space (see invariants in STATE.md).
+        We crop from the raw camera image — NOT from the resized VLM-input
+        image — so that small targets get the full sensor resolution before
+        any further downscale in the verifier path.
+        """
+        with self._image_lock:
+            img = self._latest_image
+        if img is None or bbox is None or len(bbox) != 4:
+            return None
+
+        w, h = img.size
+        x1n, y1n, x2n, y2n = bbox
+        x1 = max(0.0, min(x1n, x2n)) / 1000.0
+        y1 = max(0.0, min(y1n, y2n)) / 1000.0
+        x2 = max(x1n, x2n) / 1000.0
+        y2 = max(y1n, y2n) / 1000.0
+
+        bw, bh = (x2 - x1), (y2 - y1)
+        x1 = max(0.0, x1 - pad_frac * bw)
+        y1 = max(0.0, y1 - pad_frac * bh)
+        x2 = min(1.0, x2 + pad_frac * bw)
+        y2 = min(1.0, y2 + pad_frac * bh)
+
+        px1, py1 = int(x1 * w), int(y1 * h)
+        px2, py2 = int(x2 * w), int(y2 * h)
+        if px2 - px1 < 2 or py2 - py1 < 2:
+            return None
+
+        crop = img.crop((px1, py1, px2, py2))
+        cw, ch = crop.size
+        long_edge = max(cw, ch)
+        if long_edge < min_px:
+            scale = min_px / long_edge
+            crop = crop.resize((int(cw * scale), int(ch * scale)))
+        return crop
+
+    def _verify_detection(self, bbox: list, target_obj: str) -> bool:
+        """Crop + skeptical second VLM call. Returns True iff the verifier
+        confirms the candidate. Synchronous — the cloud VLM round-trip is the
+        same ~3 s as a normal query, and candidates are rare."""
+        crop = self._crop_candidate(bbox)
+        if crop is None:
+            logger.warning("VERIFY: no crop available for bbox=%s — rejecting", bbox)
+            return False
+        res = self.vlm.verify_candidate(crop, target_obj)
+        confirmed = bool(res and res.confirmed)
+        if not confirmed:
+            reason = (res.reason if res else "verifier failed") or ""
+            logger.info("VERIFY REJECT: %s — %s", target_obj, reason[:160])
+        return confirmed
+
     def _project_target_from_bbox(self, bbox: list | None,
                                     vlm_image_w: int | None = None,
                                     vlm_image_h: int | None = None):
@@ -388,6 +450,23 @@ class AgentNode:
                                     "DEPTH OVERRIDE: target depth=%.2fm → commit %.2fm",
                                     depth_m, result.drive_distance_m,
                                 )
+                        if result.target_visible and result.target_bbox:
+                            # Skeptical second-call verifier (#10). Gates BOTH
+                            # the detection publication AND the planner's
+                            # approach-mode decision: if the verifier rejects,
+                            # the candidate is treated as "not seen" so we
+                            # don't commit cycles to driving toward an FP.
+                            target_obj = self._mission.get("target_object", "unknown")
+                            verified = self._verify_detection(result.target_bbox, target_obj)
+                            if not verified:
+                                result.target_visible = False
+                                result.target_bbox = None
+                                proj = None
+                                # Reset the inflated drive_distance from the
+                                # earlier DEPTH OVERRIDE — we no longer believe
+                                # the candidate exists at that range.
+                                result.drive_distance_m = min(result.drive_distance_m, 0.8)
+
                         self.planner.accept_decision(result, yaw, x, y, sim_now)
                         if result.target_visible:
                             target_obj = self._mission.get("target_object", "unknown")

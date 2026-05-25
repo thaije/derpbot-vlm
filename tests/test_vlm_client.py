@@ -1,5 +1,12 @@
 import pytest
-from agent.vlm_client import NavigationDecision, VLMResult, _parse_vlm_response
+from agent.vlm_client import (
+    NavigationDecision,
+    VerificationDecision,
+    VLMResult,
+    VerifyResult,
+    _parse_verify_response,
+    _parse_vlm_response,
+)
 
 
 class TestNavigationDecision:
@@ -101,3 +108,55 @@ class TestParseVLMResponse:
         assert r.heading == "center"
         assert r.drive_distance_m == 0.5
         assert r.target_bbox is None
+
+
+class TestVerificationDecision:
+    def test_valid_confirmed(self):
+        raw = '{"confirmed": true, "matches": ["red cylinder"], "mismatches": [], "reason": "clear fire extinguisher"}'
+        v = VerificationDecision.model_validate_json(raw)
+        assert v.confirmed is True
+        assert v.matches == ["red cylinder"]
+        assert v.mismatches == []
+
+    def test_valid_rejected(self):
+        raw = '{"confirmed": false, "matches": [], "mismatches": ["wrong colour", "rectangular"], "reason": "looks like a brick"}'
+        v = VerificationDecision.model_validate_json(raw)
+        assert v.confirmed is False
+        assert len(v.mismatches) == 2
+
+
+class TestParseVerifyResponse:
+    def test_clean_json_confirmed(self):
+        r = _parse_verify_response('{"confirmed": true, "matches": ["red", "narrow"], "mismatches": [], "reason": "ok"}')
+        assert r.confirmed is True
+        assert r.matches == ["red", "narrow"]
+
+    def test_clean_json_rejected(self):
+        r = _parse_verify_response('{"confirmed": false, "matches": [], "mismatches": ["wall edge"], "reason": "not target"}')
+        assert r.confirmed is False
+        assert r.mismatches == ["wall edge"]
+
+    def test_json_in_code_fence(self):
+        raw = '```json\n{"confirmed": false, "matches": [], "mismatches": ["floor seam"], "reason": "no"}\n```'
+        r = _parse_verify_response(raw)
+        assert r.confirmed is False
+
+    def test_missing_fields_defaults(self):
+        # Schema is permissive in the parser path; missing arrays default empty
+        r = _parse_verify_response('{"confirmed": true, "reason": "ok"}')
+        assert r.confirmed is True
+        assert r.matches == []
+        assert r.mismatches == []
+
+    def test_freetext_yes_heuristic(self):
+        r = _parse_verify_response("Yes, this is clearly the target pipe.")
+        assert r.confirmed is True
+
+    def test_freetext_no_defaults_reject(self):
+        r = _parse_verify_response("This appears to be a brick wall, not the target.")
+        # Heuristic only flips to True on a "yes ... target" phrase; everything
+        # else defaults to confirmed=False, which is the safe outcome.
+        assert r.confirmed is False
+
+    def test_empty_returns_none(self):
+        assert _parse_verify_response("") is None

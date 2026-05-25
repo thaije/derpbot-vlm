@@ -55,6 +55,99 @@ class NavigationDecision(BaseModel):
 NAV_DECISION_SCHEMA = NavigationDecision.model_json_schema()
 
 
+# ── Verifier (skeptical second call, #10) ───────────────────────────────────
+# Given a tightly cropped image of a candidate region, decide whether it
+# really shows the target. Deliberately framed in the OPPOSITE direction from
+# the detection prompt (which rewards aggressive "see anything that fits"
+# behaviour). The verifier is asked to enumerate evidence both for AND against
+# so the model commits to a calibrated judgement instead of agreeing reflexively.
+
+VERIFIER_SYSTEM_PROMPT = (
+    "You are a strict visual verifier. A previous perception step flagged the"
+    " attached image crop as containing a specific target object. Your job is"
+    " to confirm or reject that claim."
+    "\nDefault to REJECT. Most regions in indoor scenes are NOT the target —"
+    " walls, floor seams, brick edges, cables and shadows all create"
+    " confusing shapes. Only confirm when the crop clearly shows the named"
+    " target."
+    "\nFor every crop, you must:"
+    "\n  - List 1-3 visual features that MATCH the target (shape, colour,"
+    "\n    typical mounting/placement, distinctive parts)."
+    "\n  - List 1-3 features that DO NOT match or look wrong."
+    "\n  - Decide confirmed=true ONLY if matches clearly outweigh mismatches"
+    "\n    AND the object is recognisable, not just a vaguely similar shape."
+    "\nReply with valid JSON ONLY, matching this schema:"
+    '\n{"confirmed": bool, "matches": [str, ...], "mismatches": [str, ...],'
+    ' "reason": str}'
+)
+
+
+class VerificationDecision(BaseModel):
+    confirmed: bool
+    matches: list[str] = []
+    mismatches: list[str] = []
+    reason: str = ""
+
+
+VERIFY_DECISION_SCHEMA = VerificationDecision.model_json_schema()
+
+
+@dataclass
+class VerifyResult:
+    confirmed: bool
+    matches: list[str]
+    mismatches: list[str]
+    reason: str
+
+
+def _parse_verify_response(raw: str) -> Optional[VerifyResult]:
+    """Tolerant parse of a verifier reply. Strict JSON → fenced → embedded →
+    heuristic last resort. Mirrors `_parse_vlm_response`."""
+    if not raw:
+        return None
+
+    def _from_dict(d: dict) -> VerifyResult:
+        return VerifyResult(
+            confirmed=bool(d.get("confirmed", False)),
+            matches=list(d.get("matches") or []),
+            mismatches=list(d.get("mismatches") or []),
+            reason=str(d.get("reason", raw[:200])),
+        )
+
+    s = raw.strip()
+    if s.startswith("{"):
+        try:
+            return _from_dict(json.loads(s))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if fence:
+        try:
+            return _from_dict(json.loads(fence.group(1)))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    obj = re.search(r"\{[^{}]*\"confirmed\"\s*:\s*(?:true|false)[^{}]*\}", raw, re.IGNORECASE)
+    if obj:
+        try:
+            return _from_dict(json.loads(obj.group(0)))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    text = raw.lower()
+    confirmed = bool(re.search(r"confirmed\s*[:=]\s*true", text)) or bool(
+        re.search(r"\b(yes|confirmed|correct)\b.*\btarget\b", text)
+    )
+    logger.warning("Verifier response unstructured, heuristic parse: %s", raw[:200])
+    return VerifyResult(
+        confirmed=confirmed,
+        matches=[],
+        mismatches=[],
+        reason=raw[:200],
+    )
+
+
 @dataclass
 class VLMResult:
     target_visible: bool
@@ -278,3 +371,66 @@ class VLMClient:
             image_width=sent_w,
             image_height=sent_h,
         )
+
+    def verify_candidate(self, crop, target_name: str) -> Optional[VerifyResult]:
+        """Skeptical second call on a candidate crop (#10).
+
+        Sends ``crop`` (a PIL Image — pre-cropped + upscaled by the caller)
+        with a verifier prompt. Returns the verifier's judgement, or None on
+        repeated failure.
+        """
+        if self._client is None:
+            raise RuntimeError("VLM client not started")
+
+        w, h = crop.size
+        if max(w, h) > MAX_IMAGE_DIM:
+            scale = MAX_IMAGE_DIM / max(w, h)
+            crop = crop.resize((int(w * scale), int(h * scale)))
+        sent_w, sent_h = crop.size
+
+        buf = io.BytesIO()
+        crop.save(buf, format="JPEG", quality=JPEG_QUALITY)
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        target_natural = (target_name or "the target").replace("_", " ")
+        user_prompt = (
+            f"Target: {target_name} (natural language: \"{target_natural}\")\n"
+            "This crop was flagged as containing the target. Confirm or reject.\n"
+            "Be strict; reject vaguely similar shapes."
+        )
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                keep_alive = 0 if self.is_cloud else -1
+                response = self._client.chat(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt, "images": [img_b64]},
+                    ],
+                    format=VERIFY_DECISION_SCHEMA,
+                    options={"temperature": 0.1},  # lower temp → more deterministic verdicts
+                    stream=False,
+                    keep_alive=keep_alive,
+                )
+                raw = response.message.content
+                if not raw:
+                    logger.warning("Verifier returned empty (attempt %d/%d)", attempt, self.max_retries)
+                    continue
+
+                result = _parse_verify_response(raw)
+                if result is not None:
+                    logger.info(
+                        "VERIFY: confirmed=%s crop=%dx%d matches=%d mismatches=%d | %s",
+                        result.confirmed, sent_w, sent_h,
+                        len(result.matches), len(result.mismatches),
+                        result.reason[:120],
+                    )
+                    return result
+                logger.warning("Verifier response unparseable (attempt %d/%d): %.200s", attempt, self.max_retries, raw)
+
+            except Exception as e:
+                logger.error("Verifier query error (attempt %d/%d): %s", attempt, self.max_retries, e)
+
+        logger.error("All %d verifier attempts failed; defaulting to REJECT (safe)", self.max_retries)
+        return VerifyResult(confirmed=False, matches=[], mismatches=[], reason="verifier failed")
