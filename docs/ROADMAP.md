@@ -16,14 +16,18 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Skeptical second-call verification of VLM detections · [#10](https://github.com/thaije/derpbot-vlm/issues/10)
-Detection rate is unblocked but FP-heavy (see #9 final comment) — the VLM identifies the target's visual class correctly, then localises a similar shape elsewhere in the scene. Add a VLM-only verifier: crop the candidate bbox, upscale, fire a second VLM call with a skeptical "list counter-evidence" prompt, and only publish detections the verifier confirms. Same model, no new dependencies, no extra reliance on depth/lidar.
+### 1. Close the TP gap (no model has produced a true positive yet) · open
+After the #11 VLM benchmark, the new default `qwen3-vl:235b-cloud` scores 16.0/16.0 with verifier on — but zero TPs. Scores come entirely from navigation + safety + exploration. The position-accuracy bottleneck identified in #9 is still open. Concrete levers from earlier ideation, now ranked by expected ROI:
+- **Approach-then-recant at close range** (#9 idea 2): when the planner enters approach mode at < 1 m from a candidate, fire a fresh full-FOV VLM query — "you came here because you thought you saw X; now that you're close, confirm or recant". Uses existing approach state; addresses the case the verifier can't fix (visual lookalikes that the verifier confirms but are not the actual target instance).
+- **Depth-pattern consistency on bbox**: pipe = horizontal depth band; fire extinguisher = vertical narrow protrusion off a wall. Reject candidates whose depth pattern doesn't match the expected shape. (User has flagged that depth-as-primary-input is not desired; consider this as a *sanity* check only.)
 
-### 2. Detection-rate work from #9 — kept open for trend tracking · [#9](https://github.com/thaije/derpbot-vlm/issues/9)
-Latest iteration recorded (4100be2). Seed 1: 4.0 → 6.8. Seed 2: 4.0 → 9.2. First-ever VLM recognition of `pipe_sewer_floor`. All published detections still FP — work moves to #10.
+### 2. Benchmark suite on more seeds (3–5) · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
+Validate on basement_find/easy seeds 1–5 with the new qwen3-vl default. Target: success=true ≥ 3/5, collision_count=0. Blocked by item 1.
 
-### 3. Validate on basement_find/easy · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Run seeds 1–5 on easy. Target: success=true ≥ 3/5, collision_count=0. Blocked by closing the FP gap above.
+### Closed in this session
+- **#10 — verifier** landed (7db699a). Round 2 of #11 confirmed verifier ON is the right default: critical for trigger-happy detectors (mistral score 5.2 → 8.0 / 6.8 → 13.2, collisions 25 → 9), neutral on conservative ones. One "too harsh" rejection observed in 60+ events.
+- **#11 — VLM benchmark** complete. Winner: `qwen3-vl:235b-cloud`. Switched default config.
+- **#9 — detection rate work** kept open for trend tracking only; the FP-rate angle was superseded by the verifier in #10.
 
 ---
 

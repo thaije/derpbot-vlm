@@ -1,8 +1,5 @@
 model:
-  # Promoted to default after #11 benchmark — qwen3-vl scored 16.0/16.0 on
-  # seeds 1+2 of basement_find/easy (vs gemma4 10.8/12.0). The gemma4 config
-  # is preserved at vlm_config_cloud_gemma4.yaml for trend continuity.
-  name: qwen3-vl:235b-cloud
+  name: gemma4:31b-cloud
   backend: ollama-cloud
 
 inference:

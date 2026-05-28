@@ -7,26 +7,43 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy, cloud VLM (`gemma4:31b-cloud`), after the verifier landed (#10) — n=1 per seed on this batch:**
+**basement_find/easy, after VLM benchmark (#11) — verifier ON, n=1 per (model, seed):**
 
-| Seed | Target | Score | Exploration | Min dist | Collisions | Detections / FP | Notes |
-|------|--------|-------|-------------|----------|------------|-----------------|-------|
-| 1 | fire_extinguisher | 9.2 | 83.0 % | 5.58 m | 6 | 0 / 0 | Cloud detector returned `target_visible=false` on every one of 8 queries — no candidate reached the verifier |
-| 2 | pipe_sewer_floor | 9.2 | 98.0 % | **0.59 m** | 6 | 0 / 0 | Robot passed within 0.6 m of GT but detector still returned no candidate |
+| Model | Seed 1 | Seed 2 | Notes |
+|---|---|---|---|
+| **`qwen3-vl:235b-cloud`** | **16.0** / 2 col / 1 cand | **16.0** / 1 col / 0 cand | Score leader; min_dist 1.33 m s2 |
+| `kimi-k2.6:cloud` | 12.0 / 5 col / 1 cand | 12.0 / 3 col / 0 cand | Consistent second |
+| `gemma4:31b-cloud` (was default) | 10.8 / 4 col / 6 cand | 12.0 / 4 col / 0 cand | 2 FPs leaked through on s1 |
+| `mistral-large-3:675b-cloud` | 8.0 / 9 col / 11 cand | 13.2 / 3 col / 12 cand | Verifier rejected ALL 23 candidates |
+| `gemini-3-flash-preview:cloud` | 4.0 / 28 col / 0 cand | 13.2 / 5 col / 0 cand | Worst-case collisions on s1 |
 
-**Synthetic verifier smoke test (3 hand-crafted crops):** verifier correctly rejected stylised red bar, blank grey square, and grey horizontal rectangle against `fire_extinguisher` and `pipe_sewer_floor` prompts, listing concrete mismatching features ("rectangular shape, lack of nozzle/handle, lack of pressure gauge"; "no cylindrical shape, no pipe characteristics"). Wiring + parser + prompt all work.
+**Default model is now `qwen3-vl:235b-cloud`** (`config/vlm_config_cloud.yaml`). Switched after #11.
 
-**Headline change vs prior iteration:** verifier landed; FP count dropped to 0/0 across both seeds — but the detector also produced 0 candidates this run, so the FP drop is not attributable to the verifier yet. Cloud VLM was visibly slow today (13–30 s per query vs prior ~3 s), starving the runs of candidates. Re-run on a normal-latency day before drawing conclusions.
+### Verifier impact (round 2, A/B same model)
 
-**Trend over recent iterations (n=1 per seed):**
+| Model | Seed | Score ON | Score OFF | FP ON | FP OFF | Col ON | Col OFF |
+|---|---|---|---|---|---|---|---|
+| gemma4 | 1 | 10.8 | **20.0** | 2 | 1 | 4 | **0** |
+| gemma4 | 2 | 12.0 | **20.0** | 0 | 0 | 4 | **0** |
+| mistral | 1 | **8.0** | 5.2 | 0 | 4 | 9 | 25 |
+| mistral | 2 | **13.2** | 6.8 | 0 | 9 | 3 | 6 |
 
-| Iteration | Seed 1 score | Seed 2 score | Seed 1 detections | Seed 2 detections |
+Verifier wins decisively on trigger-happy models (mistral) and is neutral-to-mildly-negative on conservative ones (gemma4). Default policy keeps it ON.
+
+### "Too harsh" rejections
+
+Across 60+ verifier rejection events: **one** case where the rejected candidate would have been a TP (gemma4 s1, projected (2.18, 6.47), d_gt 1.39 m, reason "blurred brick wall"). Real but rare failure mode.
+
+**Trend over recent iterations (n=1 per seed, gemma4 cloud):**
+
+| Iteration | Seed 1 | Seed 2 | Det / FP s1 | Det / FP s2 |
 |---|---|---|---|---|
-| Latency mitigation (0d30927) | 4.0 | 4.0 | 0 | 0 |
-| Detection rate (4100be2) | 6.8 | 9.2 | 4 / 4 FP | 3 / 3 FP |
-| Verifier (this) | 9.2 | 9.2 | 0 / 0 | 0 / 0 |
+| Latency mitigation (0d30927) | 4.0 | 4.0 | 0 / 0 | 0 / 0 |
+| Detection rate (4100be2) | 6.8 | 9.2 | 4 / 4 | 3 / 3 |
+| Verifier landed (7db699a) | 9.2 | 9.2 | 0 / 0 | 0 / 0 |
+| Verifier (qwen3-vl) | 16.0 | 16.0 | 0 / 0 | 0 / 0 |
 
-**Outstanding work:** evaluate verifier on a run where the detector actually produces candidates. Synthetic test shows the verifier is strict (possibly too strict on small / low-detail crops); if real-run candidates all get rejected we'll have to soften the prompt or trade strictness for recall. Until then, treat the verifier as plumbing that is provably correct end-to-end but not yet measured against real FPs.
+**Outstanding work:** no model has produced a single true positive in #11. The position-accuracy gap is still the bottleneck. Levers left from earlier ideation: depth-pattern consistency on the bbox, approach-distance gating, close-range confirmation prompt.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1 m + valid detection.
 
@@ -117,7 +134,8 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Sim speed affects VLM frequency.** At 3x speed, 300s sim = 100s wall time, only ~15 VLM queries.
 
 ### VLM / Ollama
-- **Cloud VLM detects target more often than local** (~3.5×) — fire_extinguisher reliably, pipe_sewer_floor was 0× ever until this iteration (now seen, but at wrong world position).
+- **Default cloud model: `qwen3-vl:235b-cloud`** (winner of the #11 benchmark). The gemma4 config is archived at `config/vlm_config_cloud_gemma4.yaml` for trend continuity. Other tested models live under `config/vlm_config_cloud_<name>.yaml`.
+- **Cloud VLM detects target more often than local** (~3.5×) — fire_extinguisher reliably, pipe_sewer_floor was 0× ever until #9 (now seen, but at wrong world position).
 - **Detection position must match ground truth within 1.5 m.** Bbox + depth back-projects into the map frame; published only when projection succeeds.
 - **Gemma 4 emits bbox coords in 0-1000 normalised space, regardless of input image size.** Order is `[x1, y1, x2, y2]` per our prompt. Rescale 0-1000 → depth dims directly (`agent_node._project_target_from_bbox`). Treating these as input-image pixels was a silent bug that clamped most bboxes off-image.
 - **Robot-pose fallback for detection position is removed.** When bbox/depth/K is missing we suppress the detection rather than publishing at robot pose — the fallback was an FP machine (robot pose ≠ target pose).
@@ -162,8 +180,11 @@ rm -f /tmp/derpbot_agent_ready
 # Run with local VLM (default):
 .venv/bin/python3.12 -m agent.agent_node --config config/vlm_config.yaml
 
-# Run with cloud VLM (gemma4:31b-cloud, requires `ollama signin`):
+# Run with cloud VLM (default qwen3-vl:235b-cloud, requires `ollama signin`):
 .venv/bin/python3.12 -m agent.agent_node --config config/vlm_config_cloud.yaml
+# Other cloud models tested in #11 live alongside: vlm_config_cloud_gemma4.yaml,
+# _kimik26.yaml, _mistrallarge3.yaml, _gemini3flashpreview.yaml. Disable the
+# verifier with a *_noverify.yaml variant (sets verifier.enabled: false).
 
 # Run tests
 PYTHONPATH=. .venv/bin/python3.12 -m pytest tests/ -v -p no:launch_testing
