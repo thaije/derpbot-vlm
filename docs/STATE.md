@@ -47,6 +47,23 @@ Across 60+ verifier rejection events: **one** case where the rejected candidate 
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1 m + valid detection.
 
+### Evaluation metrics (priority order — use for model comparison)
+
+Compare models on these, in this order. Use lexicographic ranking — a model only loses on the next metric if it ties on the previous one.
+
+| # | Metric | Source | Direction |
+|---|---|---|---|
+| 1 | **`success`** = `proximity_success AND target_detected` | result JSON `raw_metrics` | higher (binary) |
+| 2 | **`time_to_success`** (s) | `raw_metrics.task_completion_time` if success; else 300 (= timeout) | lower |
+| 3a | **`tp_count`** | `len(submission_log)` rows where `outcome == "TP"` | higher |
+| 3b | **`time_to_first_tp`** (s) | min `timestamp` over TP rows in `submission_log` | lower |
+| 3c | **`vlm_flag_rate`** | agent log: `vis=True` count / total VLM queries | higher = more responsive detector |
+| 4 | **`route_efficiency`** | `straight_line_distance / proximity_path_length` (proximity_reached only) | higher (1.0 = perfect) |
+
+**De-emphasised — safety-layer health, not model quality.** `collision_count`, `near_miss_count` reflect safety-cushion integrity, not VLM choice. Keep reporting them so we notice safety regressions, but they should not drive a model winner decision.
+
+**`overall_score` is misleading for model comparison.** The benchmark scorecard weights collisions and exploration heavily, so a do-nothing-safely model can outscore a do-the-mission model. Use the metrics table above instead. Score is fine as a sanity-check single number.
+
 ---
 
 ## Architecture
@@ -152,8 +169,14 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 
 ### Safety / Navigation
 - **`ReactiveSafetyLayer` owns `/cmd_vel`.** Upstream callers (planner) use `safety.command(lin, ang)`; safety publishes the filtered twist at 20 Hz from its own ROS timer. Direct publishes elsewhere would race with the timer.
+- **Collisions are still possible despite the safety layer (#12, open).** Across the #11 benchmark every model recorded some collisions; gemini-3-flash s1 once hit 28 (a stuck-state). Root causes identified: (a) 2D LiDAR plane at z≈0.12 m is blind to short floor obstacles (drills, floor pipes); (b) bumper face sits ~0.15 m ahead of the LiDAR origin so LiDAR=0.25 m leaves only ~0.10 m of bumper clearance; (c) divider walls in the basement template are sometimes hit at oblique angles where the ±30° forward arc misses them. Several fixes tried:
+  - **Depth-camera forward veto** (5th percentile of central 30 % × bottom 70 % of depth image): helps when present — qwen3-vl s1 2→0, gemini s2 5→0 — but regresses other cells (qwen3-vl s2 1→4, gemma4 s2 4→13) because the robot then explores more freely and finds low divider walls the center-window also misses. Shipped as opt-in (`safety.depth_veto_enabled: true`, default `false`).
+  - **LiDAR threshold 0.25 → 0.45 m**: same pattern, helps trigger-happy cells, regresses conservative ones. Reverted.
+  - **Forward arc 30° → 45°**: made gemini s1 worse (4 → 8). Reverted.
+- **Bumper ground-plane filter is string-match only** (`"ground_plane" in str(c.collision1/2)`). A per-contact-normal filter (`|n.z| > 0.9`) over-rejects legitimate wall hits — `normals[]` is empty or non-horizontal on real wall contacts. Mirror `metrics/collision_count.py`.
 - **Bumper ground-plane filter is string-match only** (`"ground_plane" in str(c.collision1/2)`). A per-contact-normal filter (`|n.z| > 0.9`) over-rejects legitimate wall hits — `normals[]` is empty or non-horizontal on real wall contacts. Mirror `metrics/collision_count.py`.
 - **Forward veto at <0.25 m with auto-slide.** When forward is vetoed AND upstream angular is ~0, safety injects ±0.7 rad/s rotation toward the more open side. Without this auto-slide, robot deadlocks facing walls because the planner stays in "drive forward" until deadline (~10 s/cycle wasted).
+- **Agent `_collision_events` counter vs scenario `collision_count` metric give different counts.** Agent debounces by sim-time gap of 0.5 s between bumper events (resets timer each msg); scenario metric counts rising-edge events with wall-clock 0.5 s gap and CLUSTERS them. Treat the scenario metric as ground truth; agent log is for tracing back-off behaviour, not collision counting.
 - **Planner / wall-follow split: pick one or the other.** Pre-Phase-2 had both fighting (bumper back-off vs wall-follow re-commanding forward → 11→23 collisions on seed 2). Phase 2 retires wall-follow; only the planner drives, safety filters.
 - **Planner uses absolute yaw_target = current_yaw + heading_offset.** Cumulative VLM commits in one direction accumulate yaw absolutely — robot can spin past 180° if VLM repeatedly says "left".
 - **Tried but reverted in Phase 2:** post-back-off "clearing rotation" (worsened seed 1 to 21 collisions); planner no-progress watchdog with 1 s sim window (fired prematurely against simple rotation, slowed exploration); zero auto-slide in safety (robot deadlocked at walls within 80 s sim).

@@ -22,12 +22,7 @@ After the #11 VLM benchmark, the new default `qwen3-vl:235b-cloud` scores 16.0/1
 - **Depth-pattern consistency on bbox**: pipe = horizontal depth band; fire extinguisher = vertical narrow protrusion off a wall. Reject candidates whose depth pattern doesn't match the expected shape. (User has flagged that depth-as-primary-input is not desired; consider this as a *sanity* check only.)
 
 ### 2. Benchmark suite on more seeds (3–5) · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Validate on basement_find/easy seeds 1–5 with the new qwen3-vl default. Target: success=true ≥ 3/5, collision_count=0. Blocked by item 1.
-
-### Closed in this session
-- **#10 — verifier** landed (7db699a). Round 2 of #11 confirmed verifier ON is the right default: critical for trigger-happy detectors (mistral score 5.2 → 8.0 / 6.8 → 13.2, collisions 25 → 9), neutral on conservative ones. One "too harsh" rejection observed in 60+ events.
-- **#11 — VLM benchmark** complete. Winner: `qwen3-vl:235b-cloud`. Switched default config.
-- **#9 — detection rate work** kept open for trend tracking only; the FP-rate angle was superseded by the verifier in #10.
+Validate on basement_find/easy seeds 1–5 with the new qwen3-vl default. Target: success=true ≥ 3/5. Blocked by item 1.
 
 ---
 
@@ -41,19 +36,9 @@ Titles only. Expand when a task is promoted to "Next".
 
 ---
 
-## Completed
-
-- **Local VLM prototype** · [#1](https://github.com/thaije/derpbot-vlm/issues/1) — Closed. Camera → Ollama (gemma4:e2b) → action JSON → cmd_vel. Fully local.
-- **Safety layer (initial)** · [#2](https://github.com/thaije/derpbot-vlm/issues/2) — Closed. Implemented but has collision regression, see #7.
-- **Cloud VLM test** · [#8](https://github.com/thaije/derpbot-vlm/issues/8) — Architecture confirmed across seeds 1-2. Cloud detects visually distinctive targets (fire_extinguisher: ~14%) but fails on ambiguous floor objects (pipe_sewer_floor: 0%). Remaining blockers: #7 (collisions) and detection positioning under #6.
-
----
-
 ## Open backlog
 
 Known issues not currently prioritised. Full details in the linked issues.
-
-_(none yet)_
 
 Run `gh issue list --state open --label backlog` for the live list.
 

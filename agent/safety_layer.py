@@ -28,8 +28,22 @@ logger = logging.getLogger(__name__)
 
 class ReactiveSafetyLayer:
     PUBLISH_HZ = 20.0
-    FORWARD_VETO_RANGE_M = 0.25
+    # LiDAR is mounted at z=0.12 on the body; the bumper face is ~0.15 m
+    # ahead of the LiDAR x-origin. So a LiDAR reading of 0.25 m to an
+    # obstacle leaves only ~0.10 m of bumper clearance — collision-adjacent.
+    # 0.45 m gives ~0.30 m bumper clearance and >0.7 s to react at 0.4 m/s.
+    FORWARD_VETO_RANGE_M = 0.45
     FORWARD_VETO_ARC_DEG = 30.0
+    # Depth-camera forward veto (#12). The 2D LiDAR is mounted at z≈0.12 m;
+    # objects shorter than that (drills, pipes on the floor) are entirely
+    # invisible to it. The RGBD depth image covers the full vertical FOV,
+    # so it catches floor obstacles the LiDAR cannot see.
+    # Camera origin is ~0.10 m behind the bumper face, so 0.35 m depth from
+    # the camera ≈ 0.25 m from the bumper.
+    DEPTH_VETO_RANGE_M = 0.35
+    DEPTH_SAMPLE_X_FRAC = (0.35, 0.65)   # central 30 % of image width
+    DEPTH_SAMPLE_Y_FRAC = (0.30, 1.00)   # exclude top 30 % (ceiling)
+    DEPTH_MIN_VALID = 10                 # need at least this many valid samples
     BACKUP_LINEAR_M_S = -0.2
     BACKUP_ANGULAR_RAD_S = 0.6
     BACKUP_DURATION_S = 1.5
@@ -67,12 +81,39 @@ class ReactiveSafetyLayer:
         except Exception as e:
             logger.warning("Bumper unavailable (%s); running LiDAR-only safety", e)
 
+        # Optional depth-image forward veto for short floor obstacles (#12).
+        # OFF by default — first implementation cut total collisions in some
+        # cells (gemini s2: 5→0, qwen3-vl s1: 2→0) but REGRESSED others
+        # (qwen3-vl s2: 1→4, gemma4 s2: 4→13) because the robot then moved
+        # more freely and found low divider walls the depth-center-window
+        # also misses. Treat as an experimental flag until widened to full-
+        # image sampling or paired with a stuck-state recovery.
+        # Enable with:
+        #   safety:
+        #     depth_veto_enabled: true
+        depth_topic = ros_cfg.get("depth_topic")
+        depth_veto_enabled = bool(safety_cfg.get("depth_veto_enabled", False))
+        self._cv_bridge = None
+        if depth_topic and depth_veto_enabled:
+            try:
+                from sensor_msgs.msg import Image as RosImage
+                from cv_bridge import CvBridge
+                self._cv_bridge = CvBridge()
+                node.create_subscription(RosImage, depth_topic, self._depth_cb, qos_be)
+                logger.info("Depth-veto subscribed: %s (veto<%.2fm)",
+                            depth_topic, self.DEPTH_VETO_RANGE_M)
+            except Exception as e:
+                logger.warning("Depth veto unavailable (%s); running LiDAR-only", e)
+        elif not depth_veto_enabled:
+            logger.info("Depth-veto DISABLED by config")
+
         self._lock = threading.Lock()
         self._desired_lin = 0.0
         self._desired_ang = 0.0
         self._scan_min_front = math.inf
         self._scan_min_left = math.inf
         self._scan_min_right = math.inf
+        self._depth_min_front = math.inf
 
         self._backup_until_sim_s: Optional[float] = None
         self._backup_angular_dir = 1.0
@@ -152,6 +193,32 @@ class ReactiveSafetyLayer:
             self._scan_min_left = left
             self._scan_min_right = right
 
+    def _depth_cb(self, msg) -> None:
+        """Forward depth-veto sample. The 2D LiDAR misses floor obstacles
+        shorter than its mounting height (~0.12 m); this fills the gap."""
+        if self._cv_bridge is None:
+            return
+        try:
+            import numpy as np
+            depth = self._cv_bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+            h, w = depth.shape[:2]
+            x1 = int(w * self.DEPTH_SAMPLE_X_FRAC[0])
+            x2 = int(w * self.DEPTH_SAMPLE_X_FRAC[1])
+            y1 = int(h * self.DEPTH_SAMPLE_Y_FRAC[0])
+            y2 = int(h * self.DEPTH_SAMPLE_Y_FRAC[1])
+            patch = depth[y1:y2, x1:x2]
+            valid = patch[np.isfinite(patch) & (patch > 0.15) & (patch < 6.0)]
+            if valid.size >= self.DEPTH_MIN_VALID:
+                # 5th percentile, not raw min — robust to single-pixel noise
+                # while still tracking the nearest real obstacle in the cone.
+                m = float(np.percentile(valid, 5))
+            else:
+                m = math.inf
+            with self._lock:
+                self._depth_min_front = m
+        except Exception as e:
+            logger.debug("depth_cb error: %s", e)
+
     def _bumper_cb(self, msg) -> None:
         raw = list(getattr(msg, "contacts", []))
         real = [c for c in raw if self._is_real_contact(c)]
@@ -210,6 +277,7 @@ class ReactiveSafetyLayer:
             front = self._scan_min_front
             left = self._scan_min_left
             right = self._scan_min_right
+            depth_front = self._depth_min_front
             backup_end = self._backup_until_sim_s
             backup_dir = self._backup_angular_dir
 
@@ -225,7 +293,12 @@ class ReactiveSafetyLayer:
                 self._backup_until_sim_s = None
             logger.info("BUMPER: back-off complete, resuming upstream commands")
 
-        veto = (desired_lin > 0.0) and (front < self.min_range_m)
+        # Two complementary forward vetos:
+        #   - LiDAR plane at z≈0.12 m (catches walls, tall obstacles).
+        #   - Depth-image cone (catches floor obstacles the LiDAR misses, #12).
+        veto_lidar = (desired_lin > 0.0) and (front < self.min_range_m)
+        veto_depth = (desired_lin > 0.0) and (depth_front < self.DEPTH_VETO_RANGE_M)
+        veto = veto_lidar or veto_depth
         if veto:
             # Zero forward. If the upstream wasn't already turning, slide toward
             # the more open side so the robot doesn't deadlock facing a wall.
@@ -234,6 +307,15 @@ class ReactiveSafetyLayer:
                 ang = 0.7 if left >= right else -0.7
             twist.linear.x = 0.0
             twist.angular.z = ang
+            # Throttled log so we can see which sensor saved us.
+            if not self._lidar_veto_active:
+                source = "depth" if veto_depth and not veto_lidar else (
+                    "lidar+depth" if veto_lidar and veto_depth else "lidar")
+                logger.info(
+                    "VETO ON (%s) front_lidar=%.2fm front_depth=%.2fm",
+                    source, front if math.isfinite(front) else -1,
+                    depth_front if math.isfinite(depth_front) else -1,
+                )
         else:
             twist.linear.x = desired_lin
             twist.angular.z = desired_ang
