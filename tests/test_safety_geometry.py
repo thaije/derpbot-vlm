@@ -18,16 +18,27 @@ S = ReactiveSafetyLayer.ROBOT_SIDE_M      # 0.13
 C = ReactiveSafetyLayer.ROBOT_CORNER_M    # ≈0.198
 CUSHION = ReactiveSafetyLayer.SAFETY_CUSHION_M  # 0.10
 DECEL = ReactiveSafetyLayer.MAX_LINEAR_DECEL_M_S2  # 2.0
+REACT = ReactiveSafetyLayer.REACTION_TIME_S  # 0.15
 
 
-def _stub_layer():
+def _expected_cap(clearance, react=REACT):
+    """Reference impl of the reaction-then-brake cap: positive root of
+    v·t + v²/(2a) = (clearance - cushion)."""
+    d = clearance - CUSHION
+    if d <= 0.0:
+        return 0.0
+    return math.sqrt(DECEL * DECEL * react * react + 2.0 * DECEL * d) - DECEL * react
+
+
+def _stub_layer(react=REACT):
     """Construct a ReactiveSafetyLayer without going through __init__/ROS.
 
-    We only need the geometry helpers + cushion attribute; the methods are
-    all data-in / data-out and never touch self.node.
+    We only need the geometry helpers + cushion/reaction attributes; the
+    methods are all data-in / data-out and never touch self.node.
     """
     layer = ReactiveSafetyLayer.__new__(ReactiveSafetyLayer)
     layer.cushion_m = CUSHION
+    layer.reaction_time_s = react
     return layer
 
 
@@ -123,10 +134,29 @@ class TestSafeLinearCap:
         assert self.s._safe_linear_cap(0.0) == 0.0
         assert self.s._safe_linear_cap(-1.0) == 0.0
 
-    def test_clearance_above_cushion_scales_as_sqrt(self):
-        # Clearance = cushion + 0.18 m → v_max = sqrt(2·2·0.18) = sqrt(0.72) ≈ 0.85 m/s
+    def test_cap_matches_reaction_then_brake_formula(self):
         cap = self.s._safe_linear_cap(CUSHION + 0.18)
-        assert cap == pytest.approx(math.sqrt(2 * DECEL * 0.18), abs=1e-6)
+        assert cap == pytest.approx(_expected_cap(CUSHION + 0.18), abs=1e-9)
+
+    def test_cap_stops_within_clearance(self):
+        # The whole point: at the capped speed, reaction travel + braking
+        # distance must fit inside (clearance - cushion). Check it lands on
+        # the boundary (the cap is the largest such speed).
+        for extra in (0.02, 0.08, 0.25, 0.60):
+            d = extra  # clearance - cushion
+            v = self.s._safe_linear_cap(CUSHION + d)
+            stop_dist = v * REACT + v * v / (2.0 * DECEL)
+            assert stop_dist == pytest.approx(d, abs=1e-9)
+
+    def test_reaction_term_is_more_conservative_than_instant_braking(self):
+        # With reaction latency the cap must be strictly below the old
+        # instantaneous-braking value √(2·a·d) at any positive clearance.
+        d = 0.18
+        instant = math.sqrt(2 * DECEL * d)
+        assert self.s._safe_linear_cap(CUSHION + d) < instant
+        # And a zero-reaction layer reproduces the old formula exactly.
+        s0 = _stub_layer(react=0.0)
+        assert s0._safe_linear_cap(CUSHION + d) == pytest.approx(instant, abs=1e-9)
 
     def test_caps_strictly_increases_with_clearance(self):
         a = self.s._safe_linear_cap(CUSHION + 0.05)

@@ -20,7 +20,13 @@ geometrically impossible:
                               sweeps a circle of that radius during pure
                               rotation).
   - Bumper contact still triggers back-off as a backstop — it should not
-    fire if the LiDAR veto is doing its job.
+    fire if the LiDAR veto is doing its job. The back-off recovery itself is
+    run through the same clearance caps so it can never reverse or rotate the
+    robot into a second obstacle.
+
+The forward/backward velocity cap also charges the LiDAR + control-loop
+reaction latency (`REACTION_TIME_S`) against the available clearance, so the
+robot starts braking early enough that it cannot overrun the cushion at speed.
 
 This module assumes the basement template doesn't contain any obstacle
 below the LiDAR plane (z ≈ 0.12 m). Floor-obstacle handling lived in an
@@ -46,19 +52,32 @@ class ReactiveSafetyLayer:
     ROBOT_FRONT_M = 0.15
     ROBOT_SIDE_M = 0.13          # body 0.10 + wheel hub 0.03
     ROBOT_CORNER_M = math.hypot(ROBOT_FRONT_M, ROBOT_SIDE_M)  # ≈0.198
-    # Padding beyond the robot perimeter. 0.10 m leaves only ~2 cm of true
-    # clearance at v=0.4 m/s after accounting for the LiDAR 100 ms scan
-    # window + the 50 ms control tick + the braking distance, but a larger
-    # cushion (0.15 m) made cells worse in practice because the planner
-    # then thrashes in the bigger no-go zone and pushes the robot into
-    # adjacent walls. Cushion 0.10 is the practical sweet spot.
+    # Padding beyond the robot perimeter. The LiDAR scan window + control
+    # tick latency is now charged to the velocity cap (REACTION_TIME_S), so
+    # the cushion is a pure geometric margin rather than a fudge for braking
+    # lag. A larger cushion (0.15 m) made cells worse in practice because the
+    # planner then thrashes in the bigger no-go zone and pushes the robot
+    # into adjacent walls. Cushion 0.10 is the practical sweet spot.
     SAFETY_CUSHION_M = 0.10
-    # Velocity cap formula: v ≤ √(2·a·(clear − cushion)). With DRIVE_SPEED
-    # 0.4 m/s, a=2.0 starts capping at clearance ≈ cushion + 0.04 m. A
-    # gentler value (0.8) starts earlier but produced MORE contacts in
-    # practice — the robot then crawls into the cushion zone while the
-    # planner re-issues commits. Keep a=2.0.
+    # Velocity cap: the robot must be able to stop within (clear − cushion).
+    # Stopping distance has two parts: a reaction phase where the robot keeps
+    # moving at the commanded speed before the veto can respond, then a
+    # braking phase at MAX_LINEAR_DECEL_M_S2. Solving
+    #   v·t_react + v²/(2a) ≤ (clear − cushion)
+    # for v gives the cap (see _safe_linear_cap). a=2.0; a gentler value
+    # (0.8) starts capping earlier but produced MORE contacts in practice —
+    # the robot crawled into the cushion zone while the planner re-issued
+    # commits. Keep a=2.0.
     MAX_LINEAR_DECEL_M_S2 = 2.0
+    # Reaction latency before braking actually starts: one 10 Hz LiDAR period
+    # (≤0.10 s of scan age) + one 0.05 s control tick. Without this term the
+    # cap assumed instantaneous braking, so at speed the robot overran the
+    # cushion by v·t_react and the bumper fired — the documented "inertia
+    # carries the robot the last few cm into contact" (#12). It scales with
+    # speed, so unlike a bigger fixed cushion it does NOT enlarge the no-go
+    # zone at crawl speed (where the cushion=0.15 experiment caused planner
+    # thrash).
+    REACTION_TIME_S = 0.15
 
     BACKUP_LINEAR_M_S = -0.2
     BACKUP_ANGULAR_RAD_S = 0.6
@@ -79,6 +98,9 @@ class ReactiveSafetyLayer:
         self.lidar_topic = ros_cfg["lidar_topic"]
         self.bumper_topic = ros_cfg.get("bumper_topic", self.DEFAULT_BUMPER_TOPIC)
         self.cushion_m = float(safety_cfg.get("cushion_m", self.SAFETY_CUSHION_M))
+        self.reaction_time_s = float(
+            safety_cfg.get("reaction_time_s", self.REACTION_TIME_S)
+        )
 
         qos_be = QoSProfile(
             depth=5,
@@ -288,15 +310,20 @@ class ReactiveSafetyLayer:
         return min_clear
 
     def _safe_linear_cap(self, clearance: float) -> float:
-        """Maximum |linear velocity| that can stop within `clearance - cushion`
-        at MAX_LINEAR_DECEL_M_S2. Returns 0.0 when clearance ≤ cushion.
+        """Maximum |linear velocity| from which the robot can still stop inside
+        `clearance - cushion`, accounting for reaction latency THEN braking.
+
+        Stopping distance = v·t_react + v²/(2a). Requiring it ≤ d gives a
+        quadratic whose positive root is √(a²t² + 2·a·d) − a·t. With t=0 this
+        reduces to the old √(2·a·d). Returns 0.0 when clearance ≤ cushion.
         Smooth ramp instead of a hard binary veto so the robot bleeds off
-        speed before it reaches the contact zone (the LiDAR + drivetrain
-        round-trip is otherwise too slow at 0.4 m/s)."""
+        speed before it reaches the contact zone."""
         d = clearance - self.cushion_m
         if d <= 0.0:
             return 0.0
-        return math.sqrt(2.0 * self.MAX_LINEAR_DECEL_M_S2 * d)
+        a = self.MAX_LINEAR_DECEL_M_S2
+        t = self.reaction_time_s
+        return math.sqrt(a * a * t * t + 2.0 * a * d) - a * t
 
     # ------------------------------------------------------------ publish
 
@@ -316,14 +343,24 @@ class ReactiveSafetyLayer:
 
         twist = Twist()
 
-        # Bumper back-off has highest priority — even the LiDAR veto can't
-        # override an in-progress recovery. The back-off motion itself is
-        # short (1.5 s) and runs without the geometry check; this is the
-        # "last resort" path when LiDAR somehow failed to prevent contact.
+        # Bumper back-off has highest priority for *direction* — it overrides
+        # the upstream command with a reverse-and-turn recovery. But the
+        # recovery still goes through the geometry caps: reversing blind can
+        # drive the rear/corner into another obstacle (pillars, divider walls
+        # in a cluttered basement), which would be a safety-layer-caused
+        # collision. Cap the reverse by rear clearance and drop the recovery
+        # rotation if the corner can't sweep clear.
         if backup_end is not None:
             if sim_now < backup_end:
-                twist.linear.x = self.BACKUP_LINEAR_M_S
-                twist.angular.z = self.BACKUP_ANGULAR_RAD_S * backup_dir
+                rear_clear = self._directional_clearance_m(
+                    points, direction_is_forward=False
+                )
+                rev_cap = self._safe_linear_cap(rear_clear)
+                twist.linear.x = -min(abs(self.BACKUP_LINEAR_M_S), rev_cap)
+                rot = self.BACKUP_ANGULAR_RAD_S * backup_dir
+                if self._rotation_clearance_m(points) < self.cushion_m:
+                    rot = 0.0
+                twist.angular.z = rot
                 self._cmd_pub.publish(twist)
                 return
             with self._lock:
