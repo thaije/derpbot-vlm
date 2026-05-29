@@ -79,6 +79,9 @@ class ReactiveSafetyLayer:
     # thrash).
     REACTION_TIME_S = 0.15
 
+    # Gentle reverse used to escape a wedge where the robot can neither move
+    # forward nor pivot to either open side (walls front + both sides).
+    WEDGE_ESCAPE_SPEED_M_S = 0.12
     BACKUP_LINEAR_M_S = -0.2
     BACKUP_ANGULAR_RAD_S = 0.6
     BACKUP_DURATION_S = 1.5
@@ -309,6 +312,53 @@ class ReactiveSafetyLayer:
                 min_clear = clear
         return min_clear
 
+    def _wedge_reverse_speed(self, points: Sequence[tuple[float, float]]) -> float:
+        """Reverse speed magnitude to back out of a wedge, capped by rear
+        clearance via the usual stopping bound. 0.0 when the rear is also
+        blocked — the robot is genuinely trapped and reversing would just
+        cause a rear collision."""
+        rear_clear = self._directional_clearance_m(points, direction_is_forward=False)
+        return min(self.WEDGE_ESCAPE_SPEED_M_S, self._safe_linear_cap(rear_clear))
+
+    def _point_rect_distance(self, x: float, y: float) -> float:
+        """Distance from a point to the robot rectangle (0 if inside)."""
+        dx = max(abs(x) - self.ROBOT_FRONT_M, 0.0)
+        dy = max(abs(y) - self.ROBOT_SIDE_M, 0.0)
+        return math.hypot(dx, dy)
+
+    def _rotation_allowed(self, points: Sequence[tuple[float, float]],
+                          ang: float) -> bool:
+        """Directional rotation veto.
+
+        Binary "any obstacle within corner+cushion blocks all rotation" wedges
+        the robot: pressed against a wall it can neither translate (front/rear
+        blocked in a narrow gap) nor turn, so it freezes in sustained contact.
+        But rotating *away* from the nearest obstacle is the escape — the
+        contact corner just slides tangentially.
+
+        So: if nothing is within the cushion, rotation is always fine. If
+        something is, allow rotation only in the direction that does not bring
+        the robot's perimeter closer to that nearest obstacle. We test it by
+        rotating the world-fixed scan points by a small angle opposite to the
+        commanded body rotation and checking the closest point's distance to
+        the rectangle does not shrink.
+        """
+        if abs(ang) < 1e-3:
+            return True
+        nearest = min(self._point_rect_distance(r * math.cos(t), r * math.sin(t))
+                      for t, r in points) if points else math.inf
+        if nearest >= self.cushion_m:
+            return True
+        # Body rotates by +ang; a world-fixed point moves by -ang in the body
+        # frame. Use a small probe angle to gauge the trend.
+        dtheta = -math.copysign(math.radians(5.0), ang)
+        probed = min(
+            self._point_rect_distance(r * math.cos(t + dtheta),
+                                      r * math.sin(t + dtheta))
+            for t, r in points
+        )
+        return probed >= nearest
+
     def _safe_linear_cap(self, clearance: float) -> float:
         """Maximum |linear velocity| from which the robot can still stop inside
         `clearance - cushion`, accounting for reaction latency THEN braking.
@@ -394,26 +444,31 @@ class ReactiveSafetyLayer:
                     veto_components.append(f"rear-cap<{rear_clear:.2f}m→{cap:.2f}")
                 lin = -cap  # rearward speed magnitude, preserve sign
 
-        # Rotation: an obstacle inside CORNER + cushion would be hit as the
-        # corner sweeps. Pure rotation never closes the gap further on its
-        # own (motion is tangential), so a hard veto is enough — no taper.
-        if abs(ang) > 1e-3:
-            rot_clear = self._rotation_clearance_m(points)
-            if rot_clear < self.cushion_m:
-                veto_components.append(f"rot<{rot_clear:.2f}m")
-                ang = 0.0
+        # Rotation: directional veto. Block the turn only if rotating THIS way
+        # would bring the perimeter closer to an obstacle already inside the
+        # cushion; rotating away (the wedge escape) stays allowed.
+        if abs(ang) > 1e-3 and not self._rotation_allowed(points, ang):
+            veto_components.append(
+                f"rot<{self._rotation_clearance_m(points):.2f}m")
+            ang = 0.0
 
-        # Auto-slide: if we just zeroed forward and the upstream wasn't
-        # already turning, inject a rotation toward the more-open side so
-        # the robot doesn't deadlock in front of a wall. Skip if rotation
-        # was also vetoed (corner clearance too tight to rotate).
-        rotation_vetoed = any(v.startswith("rot") for v in veto_components)
-        if (
-            desired_lin > 0.0 and lin == 0.0
-            and abs(ang) < 1e-3
-            and not rotation_vetoed
-        ):
-            ang = 0.7 if left_min >= right_min else -0.7
+        # Deadlock recovery: the upstream wants to move but every component
+        # got vetoed (forward into a wall, or rotation that would close on it).
+        # First try to pivot toward the more-open side — the directional veto
+        # allows that exactly when it opens clearance, which is the wedge
+        # escape. If even that is blocked (walls on both sides), back out when
+        # the rear permits. This is what un-sticks the planner's stop-and-turn
+        # commits in narrow divider-wall gaps; it fires for teleop too.
+        wants_motion = desired_lin > 0.0 or abs(desired_ang) > 1e-3
+        if wants_motion and lin == 0.0 and abs(ang) < 1e-3:
+            slide = 0.7 if left_min >= right_min else -0.7
+            if self._rotation_allowed(points, slide):
+                ang = slide
+            else:
+                rev = self._wedge_reverse_speed(points)
+                if rev > 0.0:
+                    lin = -rev
+                    veto_components.append(f"wedge-rev-{rev:.2f}")
 
         veto_active = bool(veto_components)
         if veto_active and not self._lidar_veto_active:
