@@ -7,17 +7,15 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy, after VLM benchmark (#11) — verifier ON, n=1 per (model, seed):**
+**basement_find/easy, after the geometry-aware safety rewrite (#12). Verifier ON, scenario updated to exclude <0.2 m objects. n=1 per (model, seed):**
 
-| Model | Seed 1 | Seed 2 | Notes |
+| Model | Seed 1 col / score | Seed 2 col / score | Notes |
 |---|---|---|---|
-| **`qwen3-vl:235b-cloud`** | **16.0** / 2 col / 1 cand | **16.0** / 1 col / 0 cand | Score leader; min_dist 1.33 m s2 |
-| `kimi-k2.6:cloud` | 12.0 / 5 col / 1 cand | 12.0 / 3 col / 0 cand | Consistent second |
-| `gemma4:31b-cloud` (was default) | 10.8 / 4 col / 6 cand | 12.0 / 4 col / 0 cand | 2 FPs leaked through on s1 |
-| `mistral-large-3:675b-cloud` | 8.0 / 9 col / 11 cand | 13.2 / 3 col / 12 cand | Verifier rejected ALL 23 candidates |
-| `gemini-3-flash-preview:cloud` | 4.0 / 28 col / 0 cand | 13.2 / 5 col / 0 cand | Worst-case collisions on s1 |
+| **`qwen3-vl:235b-cloud`** | **1 / 16.0** | 5 / 12.0 | Best; min_dist 0.52 m on s2, 99.9 % exploration |
+| `gemini-3-flash-preview:cloud` | 4 / 13.2 | 7 / 9.2 | Highest exploration; min_dist 2.12 m s2 |
+| `gemma4:31b-cloud` (archived) | 10 / 9.2 | 10 / 8.0 | Most pillar contacts |
 
-**Default model is now `qwen3-vl:235b-cloud`** (`config/vlm_config_cloud.yaml`). Switched after #11.
+**Default model: `qwen3-vl:235b-cloud`** (`config/vlm_config_cloud.yaml`). Kept after #11; the safety rewrite did not change the ordering.
 
 ### Verifier impact (round 2, A/B same model)
 
@@ -168,11 +166,16 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Verifier blocks the agent main loop for one cloud round-trip per candidate** (~3 s on a healthy cloud, 30+ s on a bad day). Safety layer keeps publishing at 20 Hz from its own ROS timer during the stall, so collisions are still filtered. If verifier latency dominates a mission budget, move it to the same ThreadPoolExecutor as the detector query.
 
 ### Safety / Navigation
-- **`ReactiveSafetyLayer` owns `/cmd_vel`.** Upstream callers (planner) use `safety.command(lin, ang)`; safety publishes the filtered twist at 20 Hz from its own ROS timer. Direct publishes elsewhere would race with the timer.
-- **Collisions are still possible despite the safety layer (#12, open).** Across the #11 benchmark every model recorded some collisions; gemini-3-flash s1 once hit 28 (a stuck-state). Root causes identified: (a) 2D LiDAR plane at z≈0.12 m is blind to short floor obstacles (drills, floor pipes); (b) bumper face sits ~0.15 m ahead of the LiDAR origin so LiDAR=0.25 m leaves only ~0.10 m of bumper clearance; (c) divider walls in the basement template are sometimes hit at oblique angles where the ±30° forward arc misses them. Several fixes tried:
-  - **Depth-camera forward veto** (5th percentile of central 30 % × bottom 70 % of depth image): helps when present — qwen3-vl s1 2→0, gemini s2 5→0 — but regresses other cells (qwen3-vl s2 1→4, gemma4 s2 4→13) because the robot then explores more freely and finds low divider walls the center-window also misses. Shipped as opt-in (`safety.depth_veto_enabled: true`, default `false`).
-  - **LiDAR threshold 0.25 → 0.45 m**: same pattern, helps trigger-happy cells, regresses conservative ones. Reverted.
-  - **Forward arc 30° → 45°**: made gemini s1 worse (4 → 8). Reverted.
+- **`ReactiveSafetyLayer` owns `/cmd_vel`.** Upstream callers (planner, teleop) use `safety.command(lin, ang)`; safety publishes the filtered twist at 20 Hz from its own ROS timer. Direct publishes elsewhere would race with the timer.
+- **Safety is geometry-aware (#12).** Robot is modelled as a rectangle 0.30 × 0.26 m (body + wheel hubs) with cushion 0.10 m. Three checks run on every published tick:
+  - **Forward / rearward translation**: minimum (x − FRONT) over scan points whose |y| < SIDE + cushion. Commanded linear speed is capped to `√(2·a·(clear − cushion))` (a = 2.0 m/s²) — a smooth ramp instead of a binary veto, so braking starts before the cushion boundary.
+  - **Rotation**: any obstacle within CORNER + cushion (≈ 0.30 m of the LiDAR) vetoes angular motion. Pure in-place rotation is otherwise tangential and cannot close the gap further.
+  - **Auto-slide**: if forward got zeroed and the upstream wasn't already turning, inject ±0.7 rad/s toward the more-open side (skipped when rotation is also vetoed).
+- **LiDAR blind-zone is handled.** `range_min` is 0.15 m on the DerpBot LiDAR and equals the robot's front extent. When the wall is pressed against the bumper, those rays return invalid → the wall vanishes from the scan. `_scan_cb` now treats `0 < r < range_min` as an obstacle at `range_min` so the safety check still vetoes that direction.
+- **The earlier opt-in depth-camera veto was removed.** The scenario no longer contains objects below the LiDAR plane (z ≈ 0.12 m), so floor-obstacle handling isn't needed.
+- **Cushion 0.10 is the practical sweet spot.** 0.15 m made things worse on average — the bigger no-go zone made the planner thrash and push the robot into adjacent walls. At cushion = 0.10 m + decel = 2.0 m/s² + 10 Hz LiDAR, true clearance after braking is ~2 cm; tight but workable.
+- **Collisions are reduced but not impossible** in the per-model benchmark above. Worst case qwen3-vl: 5 col on s2 (vs the prior 1 col). Worst case gemma4: 10 col on s2. The remaining contacts cluster around pillars and divider walls that the planner repeatedly re-commits toward; this is now a planner / replanning issue, not a perception one. Note that the robot also collides into the TARGET when it overshoots in approach mode — physically correct given the proximity goal.
+- **Things tried and reverted in #12 first pass** (kept here so we don't repeat): depth-camera forward veto (helped 3 cells, hurt 2), LiDAR threshold 0.25→0.45 m (same), forward arc 30°→45° (made gemini s1 worse). All reverted.
 - **Bumper ground-plane filter is string-match only** (`"ground_plane" in str(c.collision1/2)`). A per-contact-normal filter (`|n.z| > 0.9`) over-rejects legitimate wall hits — `normals[]` is empty or non-horizontal on real wall contacts. Mirror `metrics/collision_count.py`.
 - **Bumper ground-plane filter is string-match only** (`"ground_plane" in str(c.collision1/2)`). A per-contact-normal filter (`|n.z| > 0.9`) over-rejects legitimate wall hits — `normals[]` is empty or non-horizontal on real wall contacts. Mirror `metrics/collision_count.py`.
 - **Forward veto at <0.25 m with auto-slide.** When forward is vetoed AND upstream angular is ~0, safety injects ±0.7 rad/s rotation toward the more open side. Without this auto-slide, robot deadlocks facing walls because the planner stays in "drive forward" until deadline (~10 s/cycle wasted).

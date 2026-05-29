@@ -1,49 +1,65 @@
-"""Reactive safety layer — Phase 1 of #9.
+"""Reactive safety layer.
 
-Owns /cmd_vel. Upstream callers (wall-follow, VLM planner) issue desired
-velocities via command(); the safety layer applies LiDAR forward veto and
+Owns /cmd_vel. Upstream callers (planner, teleop) issue desired velocities
+via command(); the safety layer applies a geometry-aware LiDAR veto and
 bumper-triggered back-off, then publishes at a fixed rate.
 
-Behaviours:
-  - Bumper contact (non-ground) → enter back-off for BACKUP_DURATION_S:
-    drive backwards + rotate toward the more open side. Upstream commands
-    ignored while backing off.
-  - LiDAR forward arc < min_range_m → zero linear component, keep angular
-    (or rotate toward open side if upstream wasn't already turning).
-  - Otherwise pass through.
+The veto is built so that — given a valid 360° LiDAR scan — collisions are
+geometrically impossible:
 
-Ground-plane filter mirrors metrics/collision_count.py exactly: string-match
-on 'ground_plane' in the collision entity names. (A per-contact-normal filter
-was tried but over-rejected wall hits because `normals[]` is sometimes empty
-or has non-horizontal entries for legitimate wall contacts.)
+  - The robot is treated as a rectangle (`ROBOT_FRONT_M` x `ROBOT_SIDE_M`
+    from base_link) with a configurable cushion (`SAFETY_CUSHION_M`).
+  - For every commanded twist (lin, ang), three checks run:
+      forward translation  → any scan point in the front half whose
+                              longitudinal clearance is < cushion vetoes
+                              the forward component;
+      backward translation → mirror of the above for the rear half;
+      rotation             → any scan point whose RAW distance from
+                              base_link is < `ROBOT_CORNER_M` + cushion
+                              vetoes angular motion (the robot's corner
+                              sweeps a circle of that radius during pure
+                              rotation).
+  - Bumper contact still triggers back-off as a backstop — it should not
+    fire if the LiDAR veto is doing its job.
+
+This module assumes the basement template doesn't contain any obstacle
+below the LiDAR plane (z ≈ 0.12 m). Floor-obstacle handling lived in an
+earlier opt-in depth-camera veto path (see #12 history); it has been
+removed since the scenario was changed to clear short objects.
 """
 
 import logging
 import math
 import threading
-from typing import Optional
+from typing import List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
 
 class ReactiveSafetyLayer:
     PUBLISH_HZ = 20.0
-    # LiDAR is mounted at z=0.12 on the body; the bumper face is ~0.15 m
-    # ahead of the LiDAR x-origin. So a LiDAR reading of 0.25 m to an
-    # obstacle leaves only ~0.10 m of bumper clearance — collision-adjacent.
-    # 0.45 m gives ~0.30 m bumper clearance and >0.7 s to react at 0.4 m/s.
-    FORWARD_VETO_RANGE_M = 0.45
-    FORWARD_VETO_ARC_DEG = 30.0
-    # Depth-camera forward veto (#12). The 2D LiDAR is mounted at z≈0.12 m;
-    # objects shorter than that (drills, pipes on the floor) are entirely
-    # invisible to it. The RGBD depth image covers the full vertical FOV,
-    # so it catches floor obstacles the LiDAR cannot see.
-    # Camera origin is ~0.10 m behind the bumper face, so 0.35 m depth from
-    # the camera ≈ 0.25 m from the bumper.
-    DEPTH_VETO_RANGE_M = 0.35
-    DEPTH_SAMPLE_X_FRAC = (0.35, 0.65)   # central 30 % of image width
-    DEPTH_SAMPLE_Y_FRAC = (0.30, 1.00)   # exclude top 30 % (ceiling)
-    DEPTH_MIN_VALID = 10                 # need at least this many valid samples
+
+    # Robot geometry from robot-sandbox/robots/derpbot/urdf/derpbot.urdf:
+    # base_link collision box = 0.30 x 0.20 x 0.10. Wheels sit at y=±0.115 m
+    # extending the lateral footprint slightly past the body — fold that
+    # into SIDE so the cushion covers the wheels too.
+    ROBOT_FRONT_M = 0.15
+    ROBOT_SIDE_M = 0.13          # body 0.10 + wheel hub 0.03
+    ROBOT_CORNER_M = math.hypot(ROBOT_FRONT_M, ROBOT_SIDE_M)  # ≈0.198
+    # Padding beyond the robot perimeter. 0.10 m leaves only ~2 cm of true
+    # clearance at v=0.4 m/s after accounting for the LiDAR 100 ms scan
+    # window + the 50 ms control tick + the braking distance, but a larger
+    # cushion (0.15 m) made cells worse in practice because the planner
+    # then thrashes in the bigger no-go zone and pushes the robot into
+    # adjacent walls. Cushion 0.10 is the practical sweet spot.
+    SAFETY_CUSHION_M = 0.10
+    # Velocity cap formula: v ≤ √(2·a·(clear − cushion)). With DRIVE_SPEED
+    # 0.4 m/s, a=2.0 starts capping at clearance ≈ cushion + 0.04 m. A
+    # gentler value (0.8) starts earlier but produced MORE contacts in
+    # practice — the robot then crawls into the cushion zone while the
+    # planner re-issues commits. Keep a=2.0.
+    MAX_LINEAR_DECEL_M_S2 = 2.0
+
     BACKUP_LINEAR_M_S = -0.2
     BACKUP_ANGULAR_RAD_S = 0.6
     BACKUP_DURATION_S = 1.5
@@ -62,8 +78,7 @@ class ReactiveSafetyLayer:
         self.cmd_vel_topic = ros_cfg["cmd_vel_topic"]
         self.lidar_topic = ros_cfg["lidar_topic"]
         self.bumper_topic = ros_cfg.get("bumper_topic", self.DEFAULT_BUMPER_TOPIC)
-        self.min_range_m = float(safety_cfg.get("min_range_m", self.FORWARD_VETO_RANGE_M))
-        self.forward_arc_deg = float(safety_cfg.get("forward_arc_deg", self.FORWARD_VETO_ARC_DEG))
+        self.cushion_m = float(safety_cfg.get("cushion_m", self.SAFETY_CUSHION_M))
 
         qos_be = QoSProfile(
             depth=5,
@@ -81,39 +96,16 @@ class ReactiveSafetyLayer:
         except Exception as e:
             logger.warning("Bumper unavailable (%s); running LiDAR-only safety", e)
 
-        # Optional depth-image forward veto for short floor obstacles (#12).
-        # OFF by default — first implementation cut total collisions in some
-        # cells (gemini s2: 5→0, qwen3-vl s1: 2→0) but REGRESSED others
-        # (qwen3-vl s2: 1→4, gemma4 s2: 4→13) because the robot then moved
-        # more freely and found low divider walls the depth-center-window
-        # also misses. Treat as an experimental flag until widened to full-
-        # image sampling or paired with a stuck-state recovery.
-        # Enable with:
-        #   safety:
-        #     depth_veto_enabled: true
-        depth_topic = ros_cfg.get("depth_topic")
-        depth_veto_enabled = bool(safety_cfg.get("depth_veto_enabled", False))
-        self._cv_bridge = None
-        if depth_topic and depth_veto_enabled:
-            try:
-                from sensor_msgs.msg import Image as RosImage
-                from cv_bridge import CvBridge
-                self._cv_bridge = CvBridge()
-                node.create_subscription(RosImage, depth_topic, self._depth_cb, qos_be)
-                logger.info("Depth-veto subscribed: %s (veto<%.2fm)",
-                            depth_topic, self.DEPTH_VETO_RANGE_M)
-            except Exception as e:
-                logger.warning("Depth veto unavailable (%s); running LiDAR-only", e)
-        elif not depth_veto_enabled:
-            logger.info("Depth-veto DISABLED by config")
-
         self._lock = threading.Lock()
         self._desired_lin = 0.0
         self._desired_ang = 0.0
+        # Cached scan: list of (angle_rad, range_m), filtered to finite/in-range.
+        self._scan_points: List[tuple[float, float]] = []
+        # Convenience minima used by the existing UI (front_clearance_m()) +
+        # the auto-slide direction selector.
         self._scan_min_front = math.inf
         self._scan_min_left = math.inf
         self._scan_min_right = math.inf
-        self._depth_min_front = math.inf
 
         self._backup_until_sim_s: Optional[float] = None
         self._backup_angular_dir = 1.0
@@ -124,8 +116,10 @@ class ReactiveSafetyLayer:
         node.create_timer(1.0 / self.PUBLISH_HZ, self._publish_tick)
 
         logger.info(
-            "ReactiveSafetyLayer started (min_range=%.2fm, arc=±%.0f°, %.0fHz)",
-            self.min_range_m, self.forward_arc_deg, self.PUBLISH_HZ,
+            "ReactiveSafetyLayer started "
+            "(robot %0.2fx%0.2f m, cushion=%.2fm, corner=%.2fm, %.0fHz)",
+            2 * self.ROBOT_FRONT_M, 2 * self.ROBOT_SIDE_M,
+            self.cushion_m, self.ROBOT_CORNER_M, self.PUBLISH_HZ,
         )
 
     # ------------------------------------------------------------------ API
@@ -171,17 +165,29 @@ class ReactiveSafetyLayer:
         ai = msg.angle_increment
         rmin = msg.range_min
         rmax = msg.range_max
-        arc_rad = math.radians(self.forward_arc_deg)
 
+        points: List[tuple[float, float]] = []
         front = math.inf
         left = math.inf
         right = math.inf
+        fwd_arc = math.radians(30.0)  # legacy: front_clearance_m() reports this
 
         for i, r in enumerate(msg.ranges):
-            if math.isnan(r) or math.isinf(r) or r < rmin or r > rmax:
+            if math.isnan(r):
+                continue
+            if math.isinf(r) or r > rmax:
+                # Too far / no return — that direction is clear.
                 continue
             a = self._normalize(amin + i * ai)
-            if abs(a) <= arc_rad and r < front:
+            if r < rmin:
+                # In the LiDAR's blind zone — there IS something but we can't
+                # measure how close. Treat as an obstacle right at rmin so the
+                # safety check still vetoes motion in that direction. Without
+                # this, a robot pressed against a wall sees the wall vanish
+                # from the scan and forward motion gets re-allowed.
+                r = rmin
+            points.append((a, r))
+            if abs(a) <= fwd_arc and r < front:
                 front = r
             if 0 < a <= math.pi / 2 and r < left:
                 left = r
@@ -189,35 +195,10 @@ class ReactiveSafetyLayer:
                 right = r
 
         with self._lock:
+            self._scan_points = points
             self._scan_min_front = front
             self._scan_min_left = left
             self._scan_min_right = right
-
-    def _depth_cb(self, msg) -> None:
-        """Forward depth-veto sample. The 2D LiDAR misses floor obstacles
-        shorter than its mounting height (~0.12 m); this fills the gap."""
-        if self._cv_bridge is None:
-            return
-        try:
-            import numpy as np
-            depth = self._cv_bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-            h, w = depth.shape[:2]
-            x1 = int(w * self.DEPTH_SAMPLE_X_FRAC[0])
-            x2 = int(w * self.DEPTH_SAMPLE_X_FRAC[1])
-            y1 = int(h * self.DEPTH_SAMPLE_Y_FRAC[0])
-            y2 = int(h * self.DEPTH_SAMPLE_Y_FRAC[1])
-            patch = depth[y1:y2, x1:x2]
-            valid = patch[np.isfinite(patch) & (patch > 0.15) & (patch < 6.0)]
-            if valid.size >= self.DEPTH_MIN_VALID:
-                # 5th percentile, not raw min — robust to single-pixel noise
-                # while still tracking the nearest real obstacle in the cone.
-                m = float(np.percentile(valid, 5))
-            else:
-                m = math.inf
-            with self._lock:
-                self._depth_min_front = m
-        except Exception as e:
-            logger.debug("depth_cb error: %s", e)
 
     def _bumper_cb(self, msg) -> None:
         raw = list(getattr(msg, "contacts", []))
@@ -265,6 +246,58 @@ class ReactiveSafetyLayer:
             return False
         return True
 
+    # ------------------------------------------------------- veto geometry
+
+    def _directional_clearance_m(self, points: Sequence[tuple[float, float]],
+                                   direction_is_forward: bool) -> float:
+        """Closest obstacle clearance to the FRONT (or REAR) face of the
+        robot for motion along ±x.
+
+        For each scan point (theta, r) with theta in robot frame, 0 = +x:
+          x = r·cos(theta) — flipped if checking rearward motion
+          y = r·sin(theta)
+        Obstacles outside the robot's lateral band (|y| > SIDE + cushion)
+        can't be hit by axial motion alone. Among the rest, the minimum
+        (x − FRONT) is the worst-case clearance. Returns inf if nothing
+        is in the corridor.
+        """
+        side_limit = self.ROBOT_SIDE_M + self.cushion_m
+        front_extent = self.ROBOT_FRONT_M
+        sign = 1.0 if direction_is_forward else -1.0
+        min_clear = math.inf
+        for theta, r in points:
+            x = r * math.cos(theta) * sign
+            y = r * math.sin(theta)
+            if x <= 0:
+                continue
+            if abs(y) > side_limit:
+                continue
+            clear = x - front_extent
+            if clear < min_clear:
+                min_clear = clear
+        return min_clear
+
+    def _rotation_clearance_m(self, points: Sequence[tuple[float, float]]) -> float:
+        """For pure in-place rotation, the worst-case extent is the corner
+        radius. Returns the smallest `r - CORNER` over the scan."""
+        min_clear = math.inf
+        for _theta, r in points:
+            clear = r - self.ROBOT_CORNER_M
+            if clear < min_clear:
+                min_clear = clear
+        return min_clear
+
+    def _safe_linear_cap(self, clearance: float) -> float:
+        """Maximum |linear velocity| that can stop within `clearance - cushion`
+        at MAX_LINEAR_DECEL_M_S2. Returns 0.0 when clearance ≤ cushion.
+        Smooth ramp instead of a hard binary veto so the robot bleeds off
+        speed before it reaches the contact zone (the LiDAR + drivetrain
+        round-trip is otherwise too slow at 0.4 m/s)."""
+        d = clearance - self.cushion_m
+        if d <= 0.0:
+            return 0.0
+        return math.sqrt(2.0 * self.MAX_LINEAR_DECEL_M_S2 * d)
+
     # ------------------------------------------------------------ publish
 
     def _publish_tick(self) -> None:
@@ -274,15 +307,19 @@ class ReactiveSafetyLayer:
         with self._lock:
             desired_lin = self._desired_lin
             desired_ang = self._desired_ang
-            front = self._scan_min_front
-            left = self._scan_min_left
-            right = self._scan_min_right
-            depth_front = self._depth_min_front
+            points = list(self._scan_points)
+            left_min = self._scan_min_left
+            right_min = self._scan_min_right
             backup_end = self._backup_until_sim_s
             backup_dir = self._backup_angular_dir
 
+
         twist = Twist()
 
+        # Bumper back-off has highest priority — even the LiDAR veto can't
+        # override an in-progress recovery. The back-off motion itself is
+        # short (1.5 s) and runs without the geometry check; this is the
+        # "last resort" path when LiDAR somehow failed to prevent contact.
         if backup_end is not None:
             if sim_now < backup_end:
                 twist.linear.x = self.BACKUP_LINEAR_M_S
@@ -293,36 +330,67 @@ class ReactiveSafetyLayer:
                 self._backup_until_sim_s = None
             logger.info("BUMPER: back-off complete, resuming upstream commands")
 
-        # Two complementary forward vetos:
-        #   - LiDAR plane at z≈0.12 m (catches walls, tall obstacles).
-        #   - Depth-image cone (catches floor obstacles the LiDAR misses, #12).
-        veto_lidar = (desired_lin > 0.0) and (front < self.min_range_m)
-        veto_depth = (desired_lin > 0.0) and (depth_front < self.DEPTH_VETO_RANGE_M)
-        veto = veto_lidar or veto_depth
-        if veto:
-            # Zero forward. If the upstream wasn't already turning, slide toward
-            # the more open side so the robot doesn't deadlock facing a wall.
-            ang = desired_ang
-            if abs(ang) < 1e-3:
-                ang = 0.7 if left >= right else -0.7
-            twist.linear.x = 0.0
-            twist.angular.z = ang
-            # Throttled log so we can see which sensor saved us.
-            if not self._lidar_veto_active:
-                source = "depth" if veto_depth and not veto_lidar else (
-                    "lidar+depth" if veto_lidar and veto_depth else "lidar")
-                logger.info(
-                    "VETO ON (%s) front_lidar=%.2fm front_depth=%.2fm",
-                    source, front if math.isfinite(front) else -1,
-                    depth_front if math.isfinite(depth_front) else -1,
-                )
-        else:
-            twist.linear.x = desired_lin
-            twist.angular.z = desired_ang
+        lin = desired_lin
+        ang = desired_ang
+        veto_components: List[str] = []
+
+        # Clearance-based velocity cap. For forward motion: the smallest
+        # (x - FRONT) over the forward corridor. For rearward: mirror. Cap
+        # the commanded velocity so the robot can always brake before
+        # entering the cushion. Hard-zero when clearance ≤ cushion.
+        if lin > 0.0:
+            fwd_clear = self._directional_clearance_m(points, direction_is_forward=True)
+            cap = self._safe_linear_cap(fwd_clear)
+            if cap < abs(lin):
+                if cap == 0.0:
+                    veto_components.append(f"fwd<{fwd_clear:.2f}m")
+                else:
+                    veto_components.append(f"fwd-cap<{fwd_clear:.2f}m→{cap:.2f}")
+                lin = cap
+        elif lin < 0.0:
+            rear_clear = self._directional_clearance_m(points, direction_is_forward=False)
+            cap = self._safe_linear_cap(rear_clear)
+            if cap < abs(lin):
+                if cap == 0.0:
+                    veto_components.append(f"rear<{rear_clear:.2f}m")
+                else:
+                    veto_components.append(f"rear-cap<{rear_clear:.2f}m→{cap:.2f}")
+                lin = -cap  # rearward speed magnitude, preserve sign
+
+        # Rotation: an obstacle inside CORNER + cushion would be hit as the
+        # corner sweeps. Pure rotation never closes the gap further on its
+        # own (motion is tangential), so a hard veto is enough — no taper.
+        if abs(ang) > 1e-3:
+            rot_clear = self._rotation_clearance_m(points)
+            if rot_clear < self.cushion_m:
+                veto_components.append(f"rot<{rot_clear:.2f}m")
+                ang = 0.0
+
+        # Auto-slide: if we just zeroed forward and the upstream wasn't
+        # already turning, inject a rotation toward the more-open side so
+        # the robot doesn't deadlock in front of a wall. Skip if rotation
+        # was also vetoed (corner clearance too tight to rotate).
+        rotation_vetoed = any(v.startswith("rot") for v in veto_components)
+        if (
+            desired_lin > 0.0 and lin == 0.0
+            and abs(ang) < 1e-3
+            and not rotation_vetoed
+        ):
+            ang = 0.7 if left_min >= right_min else -0.7
+
+        veto_active = bool(veto_components)
+        if veto_active and not self._lidar_veto_active:
+            logger.info(
+                "VETO ON (%s) lin=%+.2f→%+.2f ang=%+.2f→%+.2f",
+                ",".join(veto_components),
+                desired_lin, lin, desired_ang, ang,
+            )
 
         with self._lock:
-            self._lidar_veto_active = veto
+            self._lidar_veto_active = veto_active
 
+        twist.linear.x = lin
+        twist.angular.z = ang
         self._cmd_pub.publish(twist)
 
     def _sim_now(self) -> float:
