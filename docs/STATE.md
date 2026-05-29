@@ -78,8 +78,9 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
             ↓
   ReactiveSafetyLayer (20 Hz, owns /cmd_vel):
    - command(lin, ang) API
-   - LiDAR forward veto: front<0.25 m → zero linear, slide toward open side
-   - Bumper back-off: non-ground contact → 1.5 s reverse + rotate
+   - geometry veto: reaction-aware linear cap + directional rotation veto
+     + deadlock recovery (pivot-open / rear-gated reverse) — see Invariants
+   - Bumper back-off: non-ground contact → 1.5 s capped-reverse + turn
 
   On target_visible + bbox:
    - _verify_detection(bbox, target):
@@ -167,18 +168,18 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 
 ### Safety / Navigation
 - **`ReactiveSafetyLayer` owns `/cmd_vel`.** Upstream callers (planner, teleop) use `safety.command(lin, ang)`; safety publishes the filtered twist at 20 Hz from its own ROS timer. Direct publishes elsewhere would race with the timer.
-- **Safety is geometry-aware (#12).** Robot is modelled as a rectangle 0.30 × 0.26 m (body + wheel hubs) with cushion 0.10 m. Three checks run on every published tick:
-  - **Forward / rearward translation**: minimum (x − FRONT) over scan points whose |y| < SIDE + cushion. Commanded linear speed is capped to `√(2·a·(clear − cushion))` (a = 2.0 m/s²) — a smooth ramp instead of a binary veto, so braking starts before the cushion boundary.
-  - **Rotation**: any obstacle within CORNER + cushion (≈ 0.30 m of the LiDAR) vetoes angular motion. Pure in-place rotation is otherwise tangential and cannot close the gap further.
-  - **Auto-slide**: if forward got zeroed and the upstream wasn't already turning, inject ±0.7 rad/s toward the more-open side (skipped when rotation is also vetoed).
+- **Safety is geometry-aware (#12).** Robot is modelled as a rectangle 0.30 × 0.26 m (body + wheel hubs) with cushion 0.10 m. Checks run on every published tick:
+  - **Forward / rearward translation**: minimum (x − FRONT) over scan points whose |y| < SIDE + cushion. Linear speed capped so the robot stops within (clear − cushion) accounting for **reaction latency THEN braking**: `v·t_react + v²/(2a) ≤ d` → cap `√(a²t² + 2a·d) − a·t` (a = 2.0 m/s², t_react = 0.15 s = 10 Hz LiDAR + control tick). Old `√(2a·d)` assumed instant braking and overran the cushion at speed.
+  - **Rotation (directional veto)**: when an obstacle is inside the cushion, rotation is allowed only in the direction that does NOT bring the perimeter closer (probe nearest point's distance to the rectangle under a small test rotation). Rotating *away* is the wedge escape and stays allowed. Binary "block all rotation when close" wedged the robot into sustained contact.
+  - **Deadlock recovery**: when upstream wants to move (forward OR rotate) but every component was vetoed, pivot toward the open side if the directional veto permits, else back out via `_wedge_reverse_speed` (rear-clearance gated). Replaces the old forward-only auto-slide; covers the planner's pure-rotation align phase and teleop.
+- **Bumper back-off: reverse capped, turn unconditional.** Reverse is gated by rear clearance (never reverse into a rear obstacle); the recovery turn is left unconditional — gating it on corner clearance removed the escape and froze the robot against thin divider walls (35 bumper events in one episode).
 - **LiDAR blind-zone is handled.** `range_min` is 0.15 m on the DerpBot LiDAR and equals the robot's front extent. When the wall is pressed against the bumper, those rays return invalid → the wall vanishes from the scan. `_scan_cb` now treats `0 < r < range_min` as an obstacle at `range_min` so the safety check still vetoes that direction.
 - **The earlier opt-in depth-camera veto was removed.** The scenario no longer contains objects below the LiDAR plane (z ≈ 0.12 m), so floor-obstacle handling isn't needed.
-- **Cushion 0.10 is the practical sweet spot.** 0.15 m made things worse on average — the bigger no-go zone made the planner thrash and push the robot into adjacent walls. At cushion = 0.10 m + decel = 2.0 m/s² + 10 Hz LiDAR, true clearance after braking is ~2 cm; tight but workable.
-- **Collisions are reduced but not impossible** in the per-model benchmark above. Worst case qwen3-vl: 5 col on s2 (vs the prior 1 col). Worst case gemma4: 10 col on s2. The remaining contacts cluster around pillars and divider walls that the planner repeatedly re-commits toward; this is now a planner / replanning issue, not a perception one. Note that the robot also collides into the TARGET when it overshoots in approach mode — physically correct given the proximity goal.
+- **Cushion 0.10 is the practical sweet spot.** 0.15 m made things worse — the bigger no-go zone made the planner thrash. Latency is now charged to the velocity cap (reaction term), so the cushion is a pure geometric margin, not a braking-lag fudge.
+- **Deterministic stress proves the safety layer (#12).** `scripts/safety_stress.py` drives a fixed command stream (no VLM) through the safety layer. Both `continuous` and `phased` patterns yield **0 collisions / 0 bumper events** across seeds → collisions are impossible for smooth/teleop inputs. Use it as the safety regression test; VLM runs are too high-variance to measure safety deltas (same seed gave 8 vs 17 collisions on gemma4).
+- **Residual VLM contacts are thin-divider-wall side-clips, a blind-zone structural limit.** With the directional veto the wedge-freeze is gone (qwen3-vl s2 exploration 92→99.7 %), but ~5 contacts remain: the robot side-clips thin `wall_divide_*` while maneuvering in tight quarters the VLM keeps re-approaching. A 2D *forward* veto can't catch a side-clip, and the robot's **sides (0.13 m) sit inside `range_min` (0.15 m)** so an obstacle beside the robot is invisible. User constraint: do NOT lower `range_min` (real hardware is 0.15 m). Pushing this to zero needs planner-level obstacle memory/avoidance, not reactive safety. Robot also contacts the TARGET on approach-mode overshoot — physically correct given the proximity goal.
 - **Things tried and reverted in #12 first pass** (kept here so we don't repeat): depth-camera forward veto (helped 3 cells, hurt 2), LiDAR threshold 0.25→0.45 m (same), forward arc 30°→45° (made gemini s1 worse). All reverted.
 - **Bumper ground-plane filter is string-match only** (`"ground_plane" in str(c.collision1/2)`). A per-contact-normal filter (`|n.z| > 0.9`) over-rejects legitimate wall hits — `normals[]` is empty or non-horizontal on real wall contacts. Mirror `metrics/collision_count.py`.
-- **Bumper ground-plane filter is string-match only** (`"ground_plane" in str(c.collision1/2)`). A per-contact-normal filter (`|n.z| > 0.9`) over-rejects legitimate wall hits — `normals[]` is empty or non-horizontal on real wall contacts. Mirror `metrics/collision_count.py`.
-- **Forward veto at <0.25 m with auto-slide.** When forward is vetoed AND upstream angular is ~0, safety injects ±0.7 rad/s rotation toward the more open side. Without this auto-slide, robot deadlocks facing walls because the planner stays in "drive forward" until deadline (~10 s/cycle wasted).
 - **Agent `_collision_events` counter vs scenario `collision_count` metric give different counts.** Agent debounces by sim-time gap of 0.5 s between bumper events (resets timer each msg); scenario metric counts rising-edge events with wall-clock 0.5 s gap and CLUSTERS them. Treat the scenario metric as ground truth; agent log is for tracing back-off behaviour, not collision counting.
 - **Planner / wall-follow split: pick one or the other.** Pre-Phase-2 had both fighting (bumper back-off vs wall-follow re-commanding forward → 11→23 collisions on seed 2). Phase 2 retires wall-follow; only the planner drives, safety filters.
 - **Planner uses absolute yaw_target = current_yaw + heading_offset.** Cumulative VLM commits in one direction accumulate yaw absolutely — robot can spin past 180° if VLM repeatedly says "left".
@@ -214,6 +215,11 @@ rm -f /tmp/derpbot_agent_ready
 
 # Run tests
 PYTHONPATH=. .venv/bin/python3.12 -m pytest tests/ -v -p no:launch_testing
+
+# Safety regression test (deterministic; no VLM). Start the sim as above, then:
+#   .venv/bin/python3.12 scripts/safety_stress.py \
+#       --config config/vlm_config_cloud.yaml --pattern phased   # or continuous
+# Expect collision_count == 0 for both patterns.
 ```
 
 Results: `~/Projects/robot-sandbox/results/` via `validate_submission.py`.
