@@ -343,13 +343,16 @@ class ReactiveSafetyLayer:
 
         twist = Twist()
 
-        # Bumper back-off has highest priority for *direction* — it overrides
-        # the upstream command with a reverse-and-turn recovery. But the
-        # recovery still goes through the geometry caps: reversing blind can
-        # drive the rear/corner into another obstacle (pillars, divider walls
-        # in a cluttered basement), which would be a safety-layer-caused
-        # collision. Cap the reverse by rear clearance and drop the recovery
-        # rotation if the corner can't sweep clear.
+        # Bumper back-off has highest priority — it overrides the upstream
+        # command with a reverse-AND-turn recovery. The reverse is capped by
+        # rear clearance so we never drive straight back into another obstacle
+        # (a box/pillar behind), but the turn is left UNCONDITIONAL: rotating
+        # the heading away from the wall is the reliable escape from a wedge,
+        # and for a robot already touching a wall the contact corner only
+        # slides tangentially. Gating the turn on corner clearance (an earlier
+        # attempt) removed the escape and the robot froze in sustained contact
+        # against thin divider walls — far worse than the tangential scrape it
+        # was meant to avoid.
         if backup_end is not None:
             if sim_now < backup_end:
                 rear_clear = self._directional_clearance_m(
@@ -357,10 +360,7 @@ class ReactiveSafetyLayer:
                 )
                 rev_cap = self._safe_linear_cap(rear_clear)
                 twist.linear.x = -min(abs(self.BACKUP_LINEAR_M_S), rev_cap)
-                rot = self.BACKUP_ANGULAR_RAD_S * backup_dir
-                if self._rotation_clearance_m(points) < self.cushion_m:
-                    rot = 0.0
-                twist.angular.z = rot
+                twist.angular.z = self.BACKUP_ANGULAR_RAD_S * backup_dir
                 self._cmd_pub.publish(twist)
                 return
             with self._lock:
