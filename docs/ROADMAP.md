@@ -31,6 +31,7 @@ Done for 5 seeds with the #12 safety stack (gemma4 1/5 success). Target success=
 
 Titles only. Expand when a task is promoted to "Next".
 
+- **VLM detection-debugging harness** · [#13](https://github.com/thaije/derpbot-vlm/issues/13) — `--debug` teleop mode: drive manually, run live VLM (auto + manual trigger), read full prompt/response + projection. Probes the detection bottleneck (#3).
 - **VLM tool calling** — Define `navigate()` and `report_detection()` as Ollama tools; model decides when to call each. Replaces `target_visible` boolean field with separate detection tool call. Lets VLM report detections independently of navigation actions.
 - **Benchmark submission** · [#4](https://github.com/thaije/derpbot-vlm/issues/4) — `validate_submission.py` + result JSONs.
 - **Medium/hard tier scenarios** · [#5](https://github.com/thaije/derpbot-vlm/issues/5) — once easy ≥ 3/5.
