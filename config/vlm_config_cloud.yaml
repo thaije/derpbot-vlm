@@ -1,8 +1,12 @@
 model:
-  # Promoted to default after #11 benchmark — qwen3-vl scored 16.0/16.0 on
-  # seeds 1+2 of basement_find/easy (vs gemma4 10.8/12.0). The gemma4 config
-  # is preserved at vlm_config_cloud_gemma4.yaml for trend continuity.
-  name: qwen3-vl:235b-cloud
+  # Promoted to default after the post-safety-rewrite re-benchmark (#12/#3):
+  # gemma4 is the ONLY model that produced a true positive / success on
+  # basement_find/easy (1/5 seeds; every other model got 0 detections across
+  # 5 seeds). It detects fire_extinguisher where qwen3-vl/gemini navigate to
+  # proximity but never publish a valid detection. qwen3-vl is preserved at
+  # vlm_config_cloud_qwen3vl.yaml. Earlier #11 ranking (qwen3-vl by score)
+  # was driven by overall_score, which is misleading for model choice.
+  name: gemma4:31b-cloud
   backend: ollama-cloud
 
 inference:

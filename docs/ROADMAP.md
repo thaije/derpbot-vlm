@@ -16,13 +16,14 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Close the TP gap (no model has produced a true positive yet) · open
-After the #11 VLM benchmark, the new default `qwen3-vl:235b-cloud` scores 16.0/16.0 with verifier on — but zero TPs. Scores come entirely from navigation + safety + exploration. The position-accuracy bottleneck identified in #9 is still open. Concrete levers from earlier ideation, now ranked by expected ROI:
-- **Approach-then-recant at close range** (#9 idea 2): when the planner enters approach mode at < 1 m from a candidate, fire a fresh full-FOV VLM query — "you came here because you thought you saw X; now that you're close, confirm or recant". Uses existing approach state; addresses the case the verifier can't fix (visual lookalikes that the verifier confirms but are not the actual target instance).
-- **Depth-pattern consistency on bbox**: pipe = horizontal depth band; fire extinguisher = vertical narrow protrusion off a wall. Reject candidates whose depth pattern doesn't match the expected shape. (User has flagged that depth-as-primary-input is not desired; consider this as a *sanity* check only.)
+### 1. Raise detection frequency (first TP landed; now 1/5 → target ≥3/5) · open
+Post-#12 re-benchmark: **`gemma4:31b-cloud` is the new default** — the only model that produced a TP/success (1/5 seeds, fire_extinguisher). Every other model got 0 detections in 5 seeds despite reaching the target (qwen3-vl 0.16 m proximity). So navigation is solved; **detection/publish frequency is the bottleneck.** Levers by ROI:
+- **Investigate verifier over-rejection**: most models show flag_rate > 0 (VLM says it sees the target) but 0 published detections → the verifier and/or depth-projection is dropping nearly everything. A/B verifier ON/OFF on gemma4 across seeds; check how many demotions/projection-failures occur per flagged candidate.
+- **Approach-then-recant at close range** (#9 idea 2): when the planner enters approach mode < 1 m from a candidate, fire a fresh full-FOV VLM query to confirm/recant.
+- **Depth-pattern consistency on bbox** as a *sanity* check only (depth-as-primary is not desired).
 
-### 2. Benchmark suite on more seeds (3–5) · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Validate on basement_find/easy seeds 1–5 with the new qwen3-vl default. Target: success=true ≥ 3/5. Blocked by item 1.
+### 2. Benchmark suite on more seeds · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
+Done for 5 seeds with the #12 safety stack (gemma4 1/5 success). Target success=true ≥ 3/5 unmet — gated by item 1 (detection frequency). Re-run after a detection improvement lands.
 
 ---
 

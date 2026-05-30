@@ -7,15 +7,18 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy, after the geometry-aware safety rewrite (#12). Verifier ON, scenario updated to exclude <0.2 m objects. n=1 per (model, seed):**
+**basement_find/easy re-benchmark with the #12 safety stack (reaction cap + directional veto + recovery). Verifier ON, speed 1, n=1 per (model, seed). Ranked on the priority metrics (success → tp_count), NOT overall_score.**
 
-| Model | Seed 1 col / score | Seed 2 col / score | Notes |
-|---|---|---|---|
-| **`qwen3-vl:235b-cloud`** | **1 / 16.0** | 5 / 12.0 | Best; min_dist 0.52 m on s2, 99.9 % exploration |
-| `gemini-3-flash-preview:cloud` | 4 / 13.2 | 7 / 9.2 | Highest exploration; min_dist 2.12 m s2 |
-| `gemma4:31b-cloud` (archived) | 10 / 9.2 | 10 / 8.0 | Most pillar contacts |
+| Model | success | TPs | avg col | avg near | avg exp % | best minD | Notes |
+|---|---|---|---|---|---|---|---|
+| **`gemma4:31b-cloud`** | **1/5** | **1** | 5.6 | 2.2 | 86.7 | 0.81 | **Only model that ever publishes a valid detection.** s1 TP = fire_extinguisher, 0 FP |
+| `qwen3-vl:235b-cloud` | 0/5 | 0 | 4.4 | 2.8 | 95.9 | **0.16** | Navigates to target (0.16 m) but 0 detections in 5 seeds |
+| `gemini-3-flash-preview:cloud` | 0/5 | 0 | 4.8 | 17.6 | 89.3 | 0.21 | Reaches proximity, 0 detections; near-miss spikes |
+| `kimi-k2.6:cloud` | 0/2 | 0 | 0.5 | 0.5 | 78.5 | 2.34 | Very safe but low exploration, no detections |
+| `mistral-large-3:675b-cloud` | 0/2 | 0 | 11.5 | 36.0 | 99.1 | 0.75 | Trigger-happy flagging, 0 valid detections, worst collisions |
 
-**Default model: `qwen3-vl:235b-cloud`** (`config/vlm_config_cloud.yaml`). Kept after #11; the safety rewrite did not change the ordering.
+**Default model: `gemma4:31b-cloud`** (`config/vlm_config_cloud.yaml`). Promoted after this eval — it is the only model producing a TP/success. qwen3-vl preserved at `vlm_config_cloud_qwen3vl.yaml`. The #11 ranking (qwen3-vl by overall_score) was misleading: navigation models score high but never detect.
+**Detection — not navigation — is the binding constraint.** Multiple models reach <0.2 m proximity; only gemma4 publishes a valid detection. Target object varies by seed (seed 1 = fire_extinguisher; the detectable one). gemma4 detects fire_extinguisher where qwen3-vl/gemini miss it on the same seed.
 
 ### Verifier impact (round 2, A/B same model)
 
@@ -41,7 +44,7 @@ Across 60+ verifier rejection events: **one** case where the rejected candidate 
 | Verifier landed (7db699a) | 9.2 | 9.2 | 0 / 0 | 0 / 0 |
 | Verifier (qwen3-vl) | 16.0 | 16.0 | 0 / 0 | 0 / 0 |
 
-**Outstanding work:** no model has produced a single true positive in #11. The position-accuracy gap is still the bottleneck. Levers left from earlier ideation: depth-pattern consistency on the bbox, approach-distance gating, close-range confirmation prompt.
+**Outstanding work:** the first-ever TP/success landed (gemma4, seed 1, fire_extinguisher) after the #12 safety stack. The bottleneck is now **detection frequency**: gemma4 publishes a valid detection on only 1/5 seeds and other models on 0/5, despite navigating to the target. Target ≥3/5 success is unmet. Levers: raise gemma4's detection/publish rate (verifier may be over-rejecting — flag_rate > 0 but detections ≈ 0 for most models), depth-pattern consistency on the bbox, close-range confirmation prompt.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1 m + valid detection.
 
@@ -150,7 +153,7 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Sim speed affects VLM frequency.** At 3x speed, 300s sim = 100s wall time, only ~15 VLM queries.
 
 ### VLM / Ollama
-- **Default cloud model: `qwen3-vl:235b-cloud`** (winner of the #11 benchmark). The gemma4 config is archived at `config/vlm_config_cloud_gemma4.yaml` for trend continuity. Other tested models live under `config/vlm_config_cloud_<name>.yaml`.
+- **Default cloud model: `gemma4:31b-cloud`** (only model producing a TP/success in the post-#12 re-benchmark; see Current performance). qwen3-vl preserved at `config/vlm_config_cloud_qwen3vl.yaml`. Other tested models live under `config/vlm_config_cloud_<name>.yaml`. Pick model winners on success → tp_count, never overall_score.
 - **Cloud VLM detects target more often than local** (~3.5×) — fire_extinguisher reliably, pipe_sewer_floor was 0× ever until #9 (now seen, but at wrong world position).
 - **Detection position must match ground truth within 1.5 m.** Bbox + depth back-projects into the map frame; published only when projection succeeds.
 - **Gemma 4 emits bbox coords in 0-1000 normalised space, regardless of input image size.** Order is `[x1, y1, x2, y2]` per our prompt. Rescale 0-1000 → depth dims directly (`agent_node._project_target_from_bbox`). Treating these as input-image pixels was a silent bug that clamped most bboxes off-image.
