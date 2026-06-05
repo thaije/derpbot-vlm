@@ -137,6 +137,10 @@ class ReactiveSafetyLayer:
         self._last_contact_sim_s = -1e9
         self._collision_events = 0
         self._lidar_veto_active = False
+        # Passthrough: publish the commanded twist unfiltered. Off by default;
+        # only the #13 debug harness's --no-safety flag flips it so the user can
+        # feel raw control. Still publishes via THIS timer (no /cmd_vel race).
+        self._passthrough = False
 
         node.create_timer(1.0 / self.PUBLISH_HZ, self._publish_tick)
 
@@ -154,6 +158,15 @@ class ReactiveSafetyLayer:
         with self._lock:
             self._desired_lin = float(linear_x)
             self._desired_ang = float(angular_z)
+
+    def set_passthrough(self, enabled: bool) -> None:
+        """Debug-only (#13): when True, the publish tick emits the commanded
+        twist with NO geometry/bumper filtering. Off by default."""
+        with self._lock:
+            self._passthrough = bool(enabled)
+        logger.warning("Safety passthrough %s — collision filtering %s",
+                       "ON" if enabled else "OFF",
+                       "DISABLED" if enabled else "active")
 
     def is_blocked(self) -> bool:
         """True while a bumper-triggered back-off is in progress."""
@@ -389,9 +402,16 @@ class ReactiveSafetyLayer:
             right_min = self._scan_min_right
             backup_end = self._backup_until_sim_s
             backup_dir = self._backup_angular_dir
-
+            passthrough = self._passthrough
 
         twist = Twist()
+
+        if passthrough:
+            # Raw control for the debug harness — no vetoes, no back-off.
+            twist.linear.x = desired_lin
+            twist.angular.z = desired_ang
+            self._cmd_pub.publish(twist)
+            return
 
         # Bumper back-off has highest priority — it overrides the upstream
         # command with a reverse-AND-turn recovery. The reverse is capped by

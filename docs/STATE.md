@@ -217,6 +217,13 @@ rm -f /tmp/derpbot_agent_ready
 # _kimik26.yaml, _mistrallarge3.yaml, _gemini3flashpreview.yaml. Disable the
 # verifier with a *_noverify.yaml variant (sets verifier.enabled: false).
 
+# Detection-debugging harness (#13): manual teleop + live production VLM I/O.
+# Drive with w/a/s/d, 'v' = single decision+verifier query w/ full prompt+raw
+# response printed, 'e' = auto observe-only queries. Saves frames + transcript
+# to --out-dir. Open `ros2 run rqt_image_view rqt_image_view` for the camera.
+.venv/bin/python3.12 -m agent.debug_node --config config/vlm_config_cloud.yaml
+#   --no-safety  raw control (safety passthrough)   --target X  skip mission fetch
+
 # Run tests
 PYTHONPATH=. .venv/bin/python3.12 -m pytest tests/ -v -p no:launch_testing
 

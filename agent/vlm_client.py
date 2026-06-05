@@ -307,7 +307,7 @@ class VLMClient:
                 pass
         logger.info("Ollama model unloaded")
 
-    def query(self, image, prompt: str) -> Optional[VLMResult]:
+    def query(self, image, prompt: str, verbose: bool = False) -> Optional[VLMResult]:
         if self._client is None:
             raise RuntimeError("VLM client not started")
 
@@ -320,6 +320,14 @@ class VLMClient:
         buf = io.BytesIO()
         image.save(buf, format="JPEG", quality=JPEG_QUALITY)
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        if verbose:
+            # Full prompt I/O for the debug harness (#13). Production callers
+            # leave verbose=False and keep the terse one-line summary below.
+            logger.info("VLM REQUEST · system prompt:\n%s", SYSTEM_PROMPT)
+            logger.info("VLM REQUEST · user prompt:\n%s", prompt)
+            logger.info("VLM REQUEST · image sent %dx%d JPEG q%d",
+                        sent_w, sent_h, JPEG_QUALITY)
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -339,6 +347,8 @@ class VLMClient:
                 if not raw:
                     logger.warning("VLM returned empty (attempt %d/%d)", attempt, self.max_retries)
                     continue
+                if verbose:
+                    logger.info("VLM RAW RESPONSE:\n%s", raw)
 
                 result = _parse_vlm_response(raw)
                 if result is not None:
@@ -372,7 +382,8 @@ class VLMClient:
             image_height=sent_h,
         )
 
-    def verify_candidate(self, crop, target_name: str) -> Optional[VerifyResult]:
+    def verify_candidate(self, crop, target_name: str,
+                         verbose: bool = False) -> Optional[VerifyResult]:
         """Skeptical second call on a candidate crop (#10).
 
         Sends ``crop`` (a PIL Image — pre-cropped + upscaled by the caller)
@@ -399,6 +410,12 @@ class VLMClient:
             "Be strict; reject vaguely similar shapes."
         )
 
+        if verbose:
+            logger.info("VERIFIER REQUEST · system prompt:\n%s", VERIFIER_SYSTEM_PROMPT)
+            logger.info("VERIFIER REQUEST · user prompt:\n%s", user_prompt)
+            logger.info("VERIFIER REQUEST · crop sent %dx%d JPEG q%d",
+                        sent_w, sent_h, JPEG_QUALITY)
+
         for attempt in range(1, self.max_retries + 1):
             try:
                 keep_alive = 0 if self.is_cloud else -1
@@ -417,6 +434,8 @@ class VLMClient:
                 if not raw:
                     logger.warning("Verifier returned empty (attempt %d/%d)", attempt, self.max_retries)
                     continue
+                if verbose:
+                    logger.info("VERIFIER RAW RESPONSE:\n%s", raw)
 
                 result = _parse_verify_response(raw)
                 if result is not None:
