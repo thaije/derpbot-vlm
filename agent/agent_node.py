@@ -25,6 +25,33 @@ VLM_INTERVAL_APPROACH_S = 0.2
 COMMIT_REPLAN_FRACTION = 0.25
 APPROACH_STANDOFF_M = 0.5  # stop this far short of the target when range is known
 
+# Active scan (#3 detection-frequency). The planner drives toward open space,
+# which steers AWAY from cornered targets — the robot reaches proximity but the
+# forward camera (90° HFOV) rarely centres the target, so the detector never
+# flags it. A periodic step-stop-shoot rotation sweep makes the camera look in
+# every direction, one stationary frame at a time. Stationary is REQUIRED: depth
+# back-projection localises the bbox using the latest depth + odom, so the robot
+# must not be turning between capture and projection or the position is wrong.
+SCAN_STEPS = 6                          # 6 × 60° tiles the circle (90° HFOV → 30° overlap)
+SCAN_STEP_RAD = 2.0 * math.pi / SCAN_STEPS
+SCAN_SETTLE_S = 0.4                     # sim-seconds to stand still before a shot
+SCAN_ROTATE_TIMEOUT_S = 4.0            # give up rotating a step (fully wedged) and shoot anyway
+SCAN_ANG_SPEED = 0.7                    # rad/s sweep speed
+SCAN_PERIOD_S = 20.0                   # min sim-seconds of exploration between scans
+SCAN_MIN_ROT_CLEARANCE_M = 0.20        # need ≥ this rotation clearance to bother sweeping
+                                       # (else the robot is in a corridor too tight to spin)
+
+# Approach-then-verify (#3). Detection confidence grows with proximity: a far
+# target is a few blurry pixels the verifier can't confirm ("blurry red shape,
+# lacks defining characteristics"). So APPROACH is decoupled from PUBLISH — the
+# robot drives toward ANY detector sighting to close the distance, but only
+# publishes once the verifier confirms it. A verifier reject is only taken as a
+# genuine "not the target" when the crop was close enough to judge reliably
+# (≤ VERIFY_TRUST_RANGE_M); a far reject means "too far to tell" → keep
+# approaching. This also bounds FP-chasing: a real false positive gets
+# approached at most to this range, then a close reject ends the chase.
+VERIFY_TRUST_RANGE_M = 2.0
+
 # Verifier (#10): when the detector flags target_visible=true, crop the bbox
 # region + a margin, upscale if needed, and run a second skeptical VLM call
 # before publishing.
@@ -141,6 +168,17 @@ class AgentNode:
         self._detection_counter = 0
         self._vlm_executor = ThreadPoolExecutor(max_workers=1)
         self._vlm_future: Future | None = None
+
+        # Active-scan state machine (see SCAN_* constants).
+        self._scan_active = False
+        self._scan_phase = "rotate"          # rotate → settle → query
+        self._scan_shots = 0
+        self._scan_accum = 0.0               # |yaw| rotated since the last shot
+        self._scan_last_yaw = 0.0
+        self._scan_dir = 1.0
+        self._scan_settle_until = 0.0
+        self._scan_rotate_deadline = 0.0
+        self._last_scan_end_sim = -1e9
 
     @staticmethod
     def _declare_sim_time_param():
@@ -366,6 +404,198 @@ class AgentNode:
         logger.info("DETECTION: %s id=%s at (%.2f, %.2f) %s",
                     target_type, track, tgt_x, tgt_y, log_extra)
 
+    # Camera horizontal FOV (derpbot RGBD, from the URDF). Used to turn a bbox
+    # centre into a precise bearing for the final approach.
+    CAMERA_HFOV_RAD = 1.5708
+
+    def _precise_heading_offset(self, bbox) -> float | None:
+        """Bearing (rad, +ve = left/CCW) from the camera axis to the bbox
+        centre, so the planner can steer straight at the target instead of the
+        coarse ±30° buckets. bbox is Gemma 0-1000 space. None if unavailable."""
+        if not bbox or len(bbox) != 4:
+            return None
+        fx = 0.5 * (bbox[0] + bbox[2]) / 1000.0      # 0 = left edge, 1 = right edge
+        # Camera +x is to the right; planner convention is +left/CCW, so a
+        # target on the right (fx > 0.5) needs a negative (CW) offset.
+        offset = -(fx - 0.5) * self.CAMERA_HFOV_RAD
+        return max(-self.CAMERA_HFOV_RAD / 2, min(self.CAMERA_HFOV_RAD / 2, offset))
+
+    @staticmethod
+    def _norm_angle(a: float) -> float:
+        while a > math.pi:
+            a -= 2.0 * math.pi
+        while a < -math.pi:
+            a += 2.0 * math.pi
+        return a
+
+    def _evaluate_candidate(self, result, sim_now: float):
+        """For a result flagged target_visible+bbox: at close range depth-override
+        the drive distance, run the skeptical verifier (#10), log the CANDIDATE
+        line and decide the outcome. Returns ``(proj, publish_ok, close)``:
+        ``proj`` is the depth projection (x, y, depth) or None; ``publish_ok``
+        gates publication; ``close`` is True when the sighting is within trust
+        range (used to pick precise vs coarse approach heading).
+
+        Outcomes (see VERIFY_TRUST_RANGE_M / approach-then-verify rationale):
+          - FAR (depth > trust range or no depth) → INVESTIGATE: keep visible,
+            drift toward it on the VLM's own heading/distance, no publish.
+          - CLOSE + verifier CONFIRM → publish_ok=True, precise approach.
+          - CLOSE + verifier REJECT → genuine no: demote, resume exploration.
+        Shared by the normal loop and the scan so both behave identically."""
+        if not (result.target_visible and result.target_bbox):
+            return None, False, False
+
+        proj = self._project_target_from_bbox(
+            result.target_bbox, result.image_width, result.image_height)
+        depth_m = proj[2] if proj is not None else None
+        target_obj = self._mission.get("target_object", "unknown")
+        proj_str = (f"({proj[0]:.2f},{proj[1]:.2f})@{depth_m:.2f}m"
+                    if proj is not None else "NONE")
+
+        # Far sightings: the projection is too imprecise to publish and the
+        # verifier can't reliably judge a few-pixel object, so don't verify and
+        # don't force a long drive toward the projected point (it is often
+        # behind a wall — driving the full range rams it). Keep the VLM's own
+        # clearance-aware heading + distance so the robot drifts toward the
+        # target during exploration and resolves it once genuinely close.
+        if depth_m is None or depth_m > VERIFY_TRUST_RANGE_M:
+            logger.info(
+                "CANDIDATE: target=%s bbox=%s proj=%s verifier=SKIP outcome=INVESTIGATE",
+                target_obj, result.target_bbox, proj_str)
+            return proj, False, False   # keep target_visible=True → gentle approach
+
+        # Close enough to trust: pin the drive distance to the measured range
+        # (accurate at short range) so we stop just short of the proximity
+        # radius, then run the skeptical verifier and act on it.
+        from agent.planner import MAX_DISTANCE_M
+        result.drive_distance_m = min(
+            MAX_DISTANCE_M, max(0.0, depth_m - APPROACH_STANDOFF_M))
+        logger.info("DEPTH OVERRIDE: target depth=%.2fm → commit %.2fm",
+                    depth_m, result.drive_distance_m)
+        verified, verify_reason = self._verify_detection(
+            result.target_bbox, target_obj)
+        logger.info(
+            "CANDIDATE: target=%s bbox=%s proj=%s verifier=%s outcome=%s reason=%r",
+            target_obj, result.target_bbox, proj_str,
+            "ACCEPT" if verified else "REJECT",
+            "ACCEPT" if verified else "REJECT", verify_reason[:120])
+        if not verified:
+            result.target_visible = False
+            result.target_bbox = None
+            proj = None
+            result.drive_distance_m = min(result.drive_distance_m, 0.8)
+            return None, False, True
+        return proj, True, True
+
+    # ── Active scan (step-stop-shoot rotation sweep) ────────────────────────
+    # Rotation cooperates with the safety layer instead of fighting it: the
+    # directional rotation veto can block the commanded turn direction near a
+    # wall (the deadlock-recovery then rotates the robot toward open space,
+    # possibly the *other* way). So progress is measured as ACTUAL yaw rotated
+    # in any direction (`_scan_accum`), not by reaching an absolute heading.
+    # The robot stops, settles and shoots every SCAN_STEP_RAD of accumulated
+    # rotation — stationary while capturing so depth projection stays valid.
+    def _start_scan(self, sim_now: float) -> None:
+        _, _, yaw = self._get_odom()
+        self._scan_active = True
+        self._scan_phase = "settle"          # shoot the current heading first
+        self._scan_shots = 0
+        self._scan_accum = 0.0
+        self._scan_last_yaw = yaw
+        self._scan_dir = 1.0
+        self._scan_settle_until = sim_now + SCAN_SETTLE_S
+        self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
+        self.safety.command(0.0, 0.0)
+        logger.info("SCAN: start (%d shots × %.0f°)",
+                    SCAN_STEPS, math.degrees(SCAN_STEP_RAD))
+
+    def _end_scan(self, sim_now: float, reason: str = "complete") -> None:
+        self._scan_active = False
+        self._last_scan_end_sim = sim_now
+        self.safety.command(0.0, 0.0)
+        logger.info("SCAN: end (%s)", reason)
+
+    def _scan_after_shot(self, sim_now: float) -> None:
+        self._scan_shots += 1
+        if self._scan_shots >= SCAN_STEPS:
+            self._end_scan(sim_now, reason="swept full circle")
+        else:
+            self._scan_phase = "rotate"
+            self._scan_accum = 0.0
+            _, _, self._scan_last_yaw = self._get_odom()
+            self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
+
+    def _scan_tick(self, sim_now: float) -> None:
+        """One iteration of the scan state machine. Owns the safety command and
+        the VLM future while a scan is active."""
+        x, y, yaw = self._get_odom()
+        self.memory.mark(x, y)
+
+        # A bumper back-off owns motion; pause scan timing until it clears.
+        if self.safety.is_blocked():
+            self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
+            self._scan_last_yaw = yaw
+            return
+
+        if self._scan_phase == "rotate":
+            self._scan_accum += abs(self._norm_angle(yaw - self._scan_last_yaw))
+            self._scan_last_yaw = yaw
+            if self._scan_accum >= SCAN_STEP_RAD:
+                self.safety.command(0.0, 0.0)
+                self._scan_phase = "settle"
+                self._scan_settle_until = sim_now + SCAN_SETTLE_S
+            elif sim_now >= self._scan_rotate_deadline:
+                # Rotation wedged (walls all round, safety can't turn us): shoot
+                # the current heading anyway, then move on.
+                logger.info("SCAN: rotate timeout (accum %.0f°) — shooting current heading",
+                            math.degrees(self._scan_accum))
+                self.safety.command(0.0, 0.0)
+                self._scan_phase = "settle"
+                self._scan_settle_until = sim_now + SCAN_SETTLE_S
+            else:
+                self.safety.command(0.0, self._scan_dir * SCAN_ANG_SPEED)
+            return
+
+        if self._scan_phase == "settle":
+            self.safety.command(0.0, 0.0)
+            if sim_now >= self._scan_settle_until and self._vlm_future is None:
+                self._submit_vlm_query()
+                self._scan_phase = "query"
+            return
+
+        if self._scan_phase == "query":
+            self.safety.command(0.0, 0.0)
+            if self._vlm_future is None or not self._vlm_future.done():
+                return
+            try:
+                result = self._vlm_future.result()
+            except Exception as e:
+                logger.error("SCAN VLM error: %s", e)
+                result = None
+            self._vlm_future = None
+            if result is not None:
+                logger.info("SCAN shot %d/%d: vis=%s | %s",
+                            self._scan_shots + 1, SCAN_STEPS,
+                            result.target_visible, result.reason[:80])
+                proj, publish_ok, close = self._evaluate_candidate(result, sim_now)
+                if result.target_visible:
+                    # A sighting (confirmed or too-far-to-judge) ends the scan:
+                    # leave the sweep to drive toward it. Publish only if the
+                    # verifier confirmed. Precise bearing only when close.
+                    offset = self._precise_heading_offset(result.target_bbox) if close else None
+                    if publish_ok:
+                        target_obj = self._mission.get("target_object", "unknown")
+                        self._publish_detection(
+                            target_obj, result.target_bbox, proj=proj,
+                            vlm_image_w=result.image_width,
+                            vlm_image_h=result.image_height)
+                    self.planner.accept_decision(
+                        result, yaw, x, y, sim_now, heading_offset_rad=offset)
+                    self._end_scan(sim_now, reason="approaching sighting")
+                    return
+            self._scan_after_shot(sim_now)
+            return
+
     def _check_mission_status(self) -> bool:
         url = self.config["ros"]["mission_url"]
         try:
@@ -432,6 +662,12 @@ class AgentNode:
                     logger.info("Mission completed!")
                     break
 
+                # Active scan owns motion + the VLM future while running.
+                if self._scan_active:
+                    self._scan_tick(sim_now)
+                    time.sleep(0.05)
+                    continue
+
                 # Handle VLM result
                 if self._vlm_future is not None and self._vlm_future.done():
                     try:
@@ -443,65 +679,23 @@ class AgentNode:
 
                     if result is not None:
                         x, y, yaw = self._get_odom()
-                        proj = None
-                        if result.target_visible and result.target_bbox:
-                            proj = self._project_target_from_bbox(
-                                result.target_bbox,
-                                result.image_width,
-                                result.image_height,
-                            )
-                            if proj is not None:
-                                # Override VLM's guessed drive_distance_m with the
-                                # measured range-to-target minus a standoff so the
-                                # robot stops just short of the proximity radius.
-                                _, _, depth_m = proj
-                                adjusted = max(0.0, depth_m - APPROACH_STANDOFF_M)
-                                # Cap at 2 m commit but allow up to that even if
-                                # VLM guessed something smaller.
-                                from agent.planner import MAX_DISTANCE_M
-                                result.drive_distance_m = min(MAX_DISTANCE_M, adjusted)
-                                logger.info(
-                                    "DEPTH OVERRIDE: target depth=%.2fm → commit %.2fm",
-                                    depth_m, result.drive_distance_m,
-                                )
-                        if result.target_visible and result.target_bbox:
-                            # Skeptical second-call verifier (#10). Gates BOTH
-                            # the detection publication AND the planner's
-                            # approach-mode decision: if the verifier rejects,
-                            # the candidate is treated as "not seen" so we
-                            # don't commit cycles to driving toward an FP.
-                            target_obj = self._mission.get("target_object", "unknown")
-                            verified, verify_reason = self._verify_detection(
-                                result.target_bbox, target_obj)
-                            # Structured per-candidate log for post-hoc analysis
-                            # (#11). Grep "CANDIDATE:" to recover every
-                            # detector candidate with bbox + projected world
-                            # position + verifier verdict. Distance to the
-                            # nearest GT object can be computed offline from
-                            # the result file's ground_truth_objects.
-                            if proj is not None:
-                                px, py, pd = proj
-                                proj_str = f"({px:.2f},{py:.2f})@{pd:.2f}m"
-                            else:
-                                proj_str = "NONE"
-                            logger.info(
-                                "CANDIDATE: target=%s bbox=%s proj=%s "
-                                "verifier=%s reason=%r",
-                                target_obj, result.target_bbox, proj_str,
-                                "ACCEPT" if verified else "REJECT",
-                                verify_reason[:120],
-                            )
-                            if not verified:
-                                result.target_visible = False
-                                result.target_bbox = None
-                                proj = None
-                                # Reset the inflated drive_distance from the
-                                # earlier DEPTH OVERRIDE — we no longer believe
-                                # the candidate exists at that range.
-                                result.drive_distance_m = min(result.drive_distance_m, 0.8)
-
-                        self.planner.accept_decision(result, yaw, x, y, sim_now)
+                        # Depth-override + verifier gate (shared with the scan
+                        # path). Keeps target_visible to APPROACH a sighting
+                        # (confirmed or too-far-to-judge); publishes only when
+                        # the verifier confirmed it.
+                        proj, publish_ok, close = self._evaluate_candidate(result, sim_now)
+                        offset = None
                         if result.target_visible:
+                            # Re-querying (not scanning) should follow an
+                            # approach, so push the scan cadence forward.
+                            self._last_scan_end_sim = sim_now
+                            # Precise bearing only for close sightings; far ones
+                            # use the VLM's coarser, clearance-aware heading.
+                            if close:
+                                offset = self._precise_heading_offset(result.target_bbox)
+                        self.planner.accept_decision(
+                            result, yaw, x, y, sim_now, heading_offset_rad=offset)
+                        if publish_ok:
                             target_obj = self._mission.get("target_object", "unknown")
                             self._publish_detection(
                                 target_obj, result.target_bbox, proj=proj,
@@ -517,6 +711,24 @@ class AgentNode:
                     self.memory.mark(x, y)
                     lin, ang = self.planner.compute_command(x, y, yaw, sim_now)
                     self.safety.command(lin, ang)
+
+                # Periodic stop-and-scan. Forward-only queries reach the target
+                # but rarely centre it (the planner steers toward open space,
+                # away from cornered objects); the sweep guarantees the camera
+                # looks every way. Fire purely on cadence — the query pipeline
+                # keeps the planner busy commit-to-commit, so we PREEMPT the
+                # current commit + any in-flight query rather than waiting for
+                # an idle gap that never comes. A fresh sighting pushes
+                # _last_scan_end_sim forward (see _evaluate_candidate callers),
+                # so a scan never interrupts an approach.
+                if (not self.planner.in_approach()
+                        and not self.safety.is_blocked()
+                        and (sim_now - self._last_scan_end_sim) >= SCAN_PERIOD_S
+                        and self.safety.rotation_clearance_m() >= SCAN_MIN_ROT_CLEARANCE_M):
+                    self.planner.cancel("scan")
+                    self._vlm_future = None
+                    self._start_scan(sim_now)
+                    continue
 
                 # Issue next VLM query. We pipeline:
                 #   - planner idle (commitment ended) → immediate replan

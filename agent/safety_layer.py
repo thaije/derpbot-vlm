@@ -181,6 +181,14 @@ class ReactiveSafetyLayer:
         with self._lock:
             return self._scan_min_front
 
+    def rotation_clearance_m(self) -> float:
+        """Worst-case clearance for pure in-place rotation: min(r − CORNER) over
+        the scan. ≤ 0 means a wall is inside the corner-sweep circle and the
+        robot cannot spin freely. Callers (e.g. the agent's scan) use this to
+        avoid attempting a sweep in a corridor too tight to turn in."""
+        with self._lock:
+            return self._rotation_clearance_m(self._scan_points)
+
     @property
     def collision_events(self) -> int:
         with self._lock:
