@@ -49,6 +49,41 @@ uv pip install -r requirements.txt
 python3.12 agent/agent_node.py
 ```
 
+## Debug harness
+
+An interactive tool to see *why* the VLM does or doesn't detect a target: drive
+the robot manually to any viewpoint and run the **exact production VLM prompts**
+on the live camera, with the full prompt, raw model response, parsed decision,
+verifier verdict and world projection printed (and saved to a transcript).
+
+```bash
+# 1. Start a sim (separate terminal)
+cd ~/Projects/robot-sandbox && ./scripts/run_scenario.sh \
+    config/scenarios/basement_find/easy.yaml --headless --seed 1
+
+# 2. (optional) Watch the camera
+ros2 run rqt_image_view rqt_image_view        # then pick /derpbot_0/rgbd/image
+
+# 3. Run the harness (this terminal needs keyboard focus)
+python3.12 -m agent.debug_node --config config/vlm_config_cloud.yaml
+```
+
+Controls (also printed at startup and on `?`):
+
+| Key | Action |
+|-----|--------|
+| `w` `a` `s` `d` | drive forward / left / reverse / right (sticky) |
+| `space` | stop |
+| `v` | run one VLM query **+ verifier** on the current frame (full I/O) |
+| `e` | toggle automatic periodic queries (observe-only) |
+| `p` | toggle publishing confirmed detections |
+| `f` | toggle the safety layer on/off |
+| `q` | quit |
+
+Frames and a full transcript are written to `--out-dir` (default
+`/tmp/derpbot_debug`). Useful flags: `--no-safety` (raw control, no collision
+filtering), `--target <name>` (skip the mission server). See `--help` for all.
+
 ## Configuration
 
 All tunable parameters live in [`config/vlm_config.yaml`](config/vlm_config.yaml):
