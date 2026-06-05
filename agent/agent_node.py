@@ -41,6 +41,14 @@ SCAN_PERIOD_S = 20.0                   # min sim-seconds of exploration between 
 SCAN_MIN_ROT_CLEARANCE_M = 0.20        # need ≥ this rotation clearance to bother sweeping
                                        # (else the robot is in a corridor too tight to spin)
 
+# A bbox touching the image edge is a partial / peripheral view — often wall
+# clutter sliced by the frame boundary, the dominant close-range FP source
+# (#3). Treat such a sighting as approach-only so the precise-approach re-centres
+# a real target before it can publish; genuine peripheral clutter never centres.
+BBOX_EDGE_MARGIN = 12          # in Gemma 0-1000 units
+BBOX_EDGE_MIN = BBOX_EDGE_MARGIN
+BBOX_EDGE_MAX = 1000 - BBOX_EDGE_MARGIN
+
 # Approach-then-verify (#3). Detection confidence grows with proximity: a far
 # target is a few blurry pixels the verifier can't confirm ("blurry red shape,
 # lacks defining characteristics"). So APPROACH is decoupled from PUBLISH — the
@@ -452,16 +460,20 @@ class AgentNode:
         proj_str = (f"({proj[0]:.2f},{proj[1]:.2f})@{depth_m:.2f}m"
                     if proj is not None else "NONE")
 
-        # Far sightings: the projection is too imprecise to publish and the
-        # verifier can't reliably judge a few-pixel object, so don't verify and
-        # don't force a long drive toward the projected point (it is often
-        # behind a wall — driving the full range rams it). Keep the VLM's own
-        # clearance-aware heading + distance so the robot drifts toward the
-        # target during exploration and resolves it once genuinely close.
-        if depth_m is None or depth_m > VERIFY_TRUST_RANGE_M:
+        bx1, by1, bx2, by2 = result.target_bbox
+        edge_touch = (min(bx1, bx2) <= BBOX_EDGE_MIN or max(bx1, bx2) >= BBOX_EDGE_MAX
+                      or min(by1, by2) <= BBOX_EDGE_MIN or max(by1, by2) >= BBOX_EDGE_MAX)
+
+        # Far sightings, OR a bbox sliced by the image edge (partial/peripheral
+        # view — the dominant close-range FP): don't verify or publish. Keep the
+        # VLM's own clearance-aware heading/distance so the robot drifts toward
+        # it and the precise approach re-centres a real target; clutter at the
+        # frame boundary never centres and so never publishes.
+        if depth_m is None or depth_m > VERIFY_TRUST_RANGE_M or edge_touch:
+            outcome = "INVESTIGATE-edge" if edge_touch else "INVESTIGATE"
             logger.info(
-                "CANDIDATE: target=%s bbox=%s proj=%s verifier=SKIP outcome=INVESTIGATE",
-                target_obj, result.target_bbox, proj_str)
+                "CANDIDATE: target=%s bbox=%s proj=%s verifier=SKIP outcome=%s",
+                target_obj, result.target_bbox, proj_str, outcome)
             return proj, False, False   # keep target_visible=True → gentle approach
 
         # Close enough to trust: pin the drive distance to the measured range
