@@ -1,12 +1,12 @@
-"""Depth back-projection for detection positioning — Phase 4 of #9.
+"""Depth back-projection for detection positioning (#9, reworked #14).
 
-Given a target bbox in pixel coordinates plus a depth image and camera
-intrinsics, compute the target's estimated position in the map (odom) frame.
+Given a target location description (left/center/etc.) plus a depth image and
+camera intrinsics, compute the target's estimated position in the map (odom)
+frame using a bearing-from-location + depth-column-median approach.
 
 Camera frame assumed to be REP-105 optical: x=right, y=down, z=forward.
 Camera mounted on robot base with a configurable static offset (x_fwd_m,
-y_left_m, z_up_m), no roll/pitch. Sufficient for Gazebo's forward-mounted
-RGBD camera; TF would be the correct path if mounting becomes non-trivial.
+y_left_m, z_up_m), no roll/pitch.
 """
 
 import math
@@ -18,49 +18,54 @@ logger = logging.getLogger(__name__)
 DEPTH_MIN_M = 0.15
 DEPTH_MAX_M = 6.0
 MIN_VALID_DEPTH_SAMPLES = 5
+DEPTH_COL_HALF_WIDTH = 15
 
-# DerpBot RGBD camera is mounted ~10 cm forward of base_footprint, level.
-# (Approximate — see robot-sandbox SDF; refine if numbers look off.)
 CAMERA_OFFSET_FORWARD_M = 0.10
 CAMERA_OFFSET_LEFT_M = 0.0
 
+CAMERA_HFOV_RAD = 1.5708
 
-def back_project_bbox(
-    bbox: list[int],
+LOCATION_BEARINGS = {
+    "far left":      -0.75,
+    "left":          -0.42,
+    "center-left":   -0.21,
+    "center":         0.0,
+    "center-right":   0.21,
+    "right":          0.42,
+    "far right":      0.75,
+}
+
+
+def location_to_bearing(location: str) -> Optional[float]:
+    """Convert a VLM location string to a horizontal bearing (rad, +left)."""
+    return LOCATION_BEARINGS.get(location)
+
+
+def back_project_from_location(
+    location: str,
     depth_image,
     K: list[float],
     robot_x: float,
     robot_y: float,
     robot_yaw: float,
 ) -> Optional[tuple[float, float, float]]:
-    """Return (x_map, y_map, depth_m) of the target, or None if depth invalid.
+    """Return (x_map, y_map, depth_m) for a location-bearing target, or None.
 
-    bbox: [x1, y1, x2, y2] in pixels (top-left origin).
-    depth_image: 2-D numpy array of depths in metres (float32).
-    K: row-major 3x3 camera intrinsics (length-9 list, [fx,0,cx, 0,fy,cy, 0,0,1]).
+    Maps the location to a horizontal bearing fraction of the camera HFOV,
+    then reads a column patch from the depth image at that bearing to get
+    a robust median depth. Back-projects using the camera intrinsics +
+    robot pose.
     """
     import numpy as np
 
-    if depth_image is None or bbox is None or len(bbox) != 4:
+    if depth_image is None or K is None:
+        return None
+
+    bearing = location_to_bearing(location)
+    if bearing is None:
         return None
 
     h, w = depth_image.shape[:2]
-    x1 = max(0, min(w - 1, int(bbox[0])))
-    y1 = max(0, min(h - 1, int(bbox[1])))
-    x2 = max(0, min(w - 1, int(bbox[2])))
-    y2 = max(0, min(h - 1, int(bbox[3])))
-    if x1 >= x2 or y1 >= y2:
-        return None
-
-    patch = depth_image[y1:y2, x1:x2]
-    valid_mask = np.isfinite(patch) & (patch > DEPTH_MIN_M) & (patch < DEPTH_MAX_M)
-    valid = patch[valid_mask]
-    if valid.size < MIN_VALID_DEPTH_SAMPLES:
-        return None
-    depth = float(np.median(valid))
-
-    cx_pix = 0.5 * (x1 + x2)
-    cy_pix = 0.5 * (y1 + y2)
 
     fx = float(K[0])
     fy = float(K[4])
@@ -69,14 +74,29 @@ def back_project_bbox(
     if fx <= 0 or fy <= 0:
         return None
 
+    cx_pix = cx_k + fx * math.tan(bearing)
+    cx_pix = max(0.0, min(float(w - 1), cx_pix))
+
+    col_lo = max(0, int(cx_pix) - DEPTH_COL_HALF_WIDTH)
+    col_hi = min(w, int(cx_pix) + DEPTH_COL_HALF_WIDTH + 1)
+    row_lo = int(h * 0.25)
+    row_hi = int(h * 0.85)
+
+    patch = depth_image[row_lo:row_hi, col_lo:col_hi]
+    valid_mask = np.isfinite(patch) & (patch > DEPTH_MIN_M) & (patch < DEPTH_MAX_M)
+    valid = patch[valid_mask]
+    if valid.size < MIN_VALID_DEPTH_SAMPLES:
+        return None
+    depth = float(np.median(valid))
+
+    cy_pix = 0.5 * (row_lo + row_hi)
+
     x_cam = (cx_pix - cx_k) * depth / fx
     y_cam = (cy_pix - cy_k) * depth / fy
     z_cam = depth
 
-    # Optical → base: base_x = z_cam (+ forward offset), base_y = -x_cam (+ left offset)
     x_base = z_cam + CAMERA_OFFSET_FORWARD_M
     y_base = -x_cam + CAMERA_OFFSET_LEFT_M
-    # z dimension dropped — ground-plane target assumption is good enough here.
     _ = y_cam
 
     x_map = robot_x + math.cos(robot_yaw) * x_base - math.sin(robot_yaw) * y_base

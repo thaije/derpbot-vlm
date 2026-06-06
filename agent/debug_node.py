@@ -62,7 +62,7 @@ HELP = (
     "  p   toggle detection publishing      f toggle safety filtering\n"
     "  ?   this help        q quit\n"
     "\n"
-    "  Frames with bounding boxes are saved as frame_NNNN_bbox.png\n"
+    "  Frames with location annotations are saved as frame_NNNN_loc.png\n"
 )
 
 
@@ -91,12 +91,12 @@ class DebugNode(AgentNode):
     def _target_object(self) -> str:
         return (self._mission or {}).get("target_object", "unknown")
 
-    def _save_frame(self, seq: int, bbox=None, label=None):
+    def _save_frame(self, seq: int, location=None, label=None):
         img = self._get_latest_image()
         if img is None:
             return None
-        if bbox is not None:
-            img = self._annotate_bbox(img, bbox, label)
+        if location is not None:
+            img = self._annotate_location(img, location, label)
         path = os.path.join(self._out_dir, f"frame_{seq:04d}.png")
         try:
             img.save(path)
@@ -105,15 +105,15 @@ class DebugNode(AgentNode):
             logger.warning("Frame save failed: %s", e)
             return None
 
-    def _save_annotated(self, seq: int, bbox: list, target_name: str,
+    def _save_annotated(self, seq: int, location: str, target_name: str,
                         status: str):
-        """Save an annotated copy (raw frame + bbox overlay) alongside the
-        raw frame. Uses ``_bbox`` suffix so it's co-located with the raw one."""
+        """Save an annotated copy (raw frame + location label) alongside the
+        raw frame."""
         img = self._get_latest_image()
         if img is None:
             return
-        annotated = self._annotate_bbox(img, bbox, f"{target_name} ({status})")
-        path = os.path.join(self._out_dir, f"frame_{seq:04d}_bbox.png")
+        annotated = self._annotate_location(img, location, f"{target_name} ({status})")
+        path = os.path.join(self._out_dir, f"frame_{seq:04d}_loc.png")
         try:
             annotated.save(path)
             logger.info("Annotated frame saved: %s", os.path.basename(path))
@@ -121,35 +121,22 @@ class DebugNode(AgentNode):
             logger.warning("Annotated frame save failed: %s", e)
 
     @staticmethod
-    def _annotate_bbox(img: Image.Image, bbox: list, label: str | None) -> Image.Image:
-        """Draw a bounding box and label on a copy of the image.
-
-        bbox is in Gemma 0-1000 normalised coords [x1, y1, x2, y2].
-        """
+    def _annotate_location(img: Image.Image, location: str, label: str | None) -> Image.Image:
+        """Draw a location label on a copy of the image."""
         img = img.copy()
-        w, h = img.size
-        x1n, y1n, x2n, y2n = bbox
-        px1 = max(0, int(min(x1n, x2n) / 1000.0 * w))
-        py1 = max(0, int(min(y1n, y2n) / 1000.0 * h))
-        px2 = min(w, int(max(x1n, x2n) / 1000.0 * w))
-        py2 = min(h, int(max(y1n, y2n) / 1000.0 * h))
-
         draw = ImageDraw.Draw(img)
-        line_w = max(2, int(min(w, h) / 150))
-        draw.rectangle([px1, py1, px2, py2], outline="lime", width=line_w)
         if label:
-            font_size = max(14, int(min(w, h) / 25))
+            font_size = max(14, int(min(img.size) / 25))
             try:
                 font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
             except OSError:
                 font = ImageFont.load_default(size=font_size)
-            text_y = max(0, py1 - font_size - 4)
-            draw.text((px1 + 2, text_y), label, fill="lime", font=font)
+            draw.text((4, 4), f"[{location}] {label}", fill="lime", font=font)
         return img
 
-    def _report_projection(self, bbox):
-        """Print depth back-projection outcome for a bbox (or why it failed)."""
-        proj = self._project_target_from_bbox(bbox)
+    def _report_projection(self, location):
+        """Print depth back-projection outcome for a location (or why it failed)."""
+        proj = self._project_target_from_location(location)
         if proj is None:
             with self._depth_lock:
                 have_depth = self._depth_image is not None
@@ -157,9 +144,9 @@ class DebugNode(AgentNode):
                 have_k = self._camera_K is not None
             logger.info(
                 "PROJECTION: SUPPRESSED — no world position "
-                "(depth=%s camera_info=%s bbox=%s)",
+                "(depth=%s camera_info=%s location=%s)",
                 "ok" if have_depth else "MISSING",
-                "ok" if have_k else "MISSING", bbox)
+                "ok" if have_k else "MISSING", location)
             return None
         x, y, d = proj
         logger.info("PROJECTION: world=(%.2f, %.2f) depth=%.2fm", x, y, d)
@@ -194,38 +181,34 @@ class DebugNode(AgentNode):
             logger.warning("VLM returned no result")
             return
         logger.info(
-            "PARSED DECISION: target_visible=%s heading=%s drive=%.2fm bbox=%s",
+            "PARSED DECISION: target_visible=%s heading=%s drive=%.2fm location=%s",
             result.target_visible, result.heading,
-            result.drive_distance_m, result.target_bbox)
+            result.drive_distance_m, result.target_location)
         logger.info("PARSED REASON: %s", result.reason)
 
-        if result.target_visible and result.target_bbox:
-            self._save_annotated(seq, result.target_bbox, target, "visible")
+        if result.target_visible and result.target_location:
+            self._save_annotated(seq, result.target_location, target, "visible")
 
-        if not (result.target_visible and result.target_bbox):
-            logger.info("No bbox candidate → skipping verifier + projection")
+        if not (result.target_visible and result.target_location):
+            logger.info("No location candidate → skipping verifier + projection")
             logger.info("=" * 70)
             return
 
-        # Verifier (same crop + skeptical second call as production).
+        # Verifier (full image + location, same as production).
         verdict = None
-        crop = self._crop_candidate(result.target_bbox)
-        if crop is None:
-            logger.warning("VERIFIER: could not crop bbox %s", result.target_bbox)
-        else:
-            vres = self.vlm.verify_candidate(crop, target, verbose=True)
-            if vres is not None:
-                verdict = "CONFIRM" if vres.confirmed else "REJECT"
-                logger.info(
-                    "VERIFIER VERDICT: %s  matches=%s  mismatches=%s",
-                    verdict, vres.matches, vres.mismatches)
+        vres = self.vlm.verify_candidate(img, target, location=result.target_location, verbose=True)
+        if vres is not None:
+            verdict = "CONFIRM" if vres.confirmed else "REJECT"
+            logger.info(
+                "VERIFIER VERDICT: %s  matches=%s  mismatches=%s",
+                verdict, vres.matches, vres.mismatches)
 
         if verdict is not None:
-            self._save_annotated(seq, result.target_bbox, target, verdict)
+            self._save_annotated(seq, result.target_location, target, verdict)
 
-        proj = self._report_projection(result.target_bbox)
+        proj = self._report_projection(result.target_location)
         if self._publish_enabled and proj is not None:
-            self._publish_detection(target, result.target_bbox, proj=proj)
+            self._publish_detection(target, location=result.target_location, proj=proj)
         elif not self._publish_enabled:
             logger.info("(publishing disabled — press 'p' to enable)")
         logger.info("=" * 70)
@@ -244,16 +227,16 @@ class DebugNode(AgentNode):
             self._vlm_future = None
             if result is not None:
                 logger.info(
-                    "AUTO: vis=%s hdg=%s drive=%.2fm bbox=%s | %s",
+                    "AUTO: vis=%s hdg=%s drive=%.2fm loc=%s | %s",
                     result.target_visible, result.heading,
-                    result.drive_distance_m, result.target_bbox,
+                    result.drive_distance_m, result.target_location,
                     result.reason[:90])
-                if result.target_visible and result.target_bbox:
-                    self._report_projection(result.target_bbox)
+                if result.target_visible and result.target_location:
+                    self._report_projection(result.target_location)
                     seq = self._seq
                     self._seq += 1
                     self._save_frame(seq)
-                    self._save_annotated(seq, result.target_bbox,
+                    self._save_annotated(seq, result.target_location,
                                          self._target_object(), "visible (auto)")
                     logger.info("  (press 'v' to run the verifier on this view)")
             return

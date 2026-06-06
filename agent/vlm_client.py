@@ -25,9 +25,10 @@ SYSTEM_PROMPT = (
     "\n     accept any object that plausibly fits the description — synonyms,"
     "\n     variants, partial views and side-on views all count."
     "\n     Set target_visible=true if you see ANY object that could match."
-    "\n     If true, you MUST also fill target_bbox=[x1,y1,x2,y2] tightly around"
-    "\n     the object (top-left = (0,0))."
-    "\n     NEVER report target_visible=true without a bounding box."
+    "\n     If true, you MUST also fill target_location with the object's position"
+    "\n     in the image: one of \"far left\", \"left\", \"center-left\", \"center\","
+    "\n     \"center-right\", \"right\", \"far right\"."
+    "\n     NEVER report target_visible=true without a location."
     "\n  2. NAVIGATE — pick the next heading and how far to drive there."
     "\n     heading ∈ {\"left\" (~30° left), \"center\" (straight), \"right\" (~30° right)}."
     "\n     drive_distance_m ∈ [0.0, 2.0]. 0.0 = stop and rescan."
@@ -39,14 +40,17 @@ SYSTEM_PROMPT = (
     "\n    longer (1.0-2.0 m) when the path ahead is clearly open."
     "\n  - If you are facing a wall and no good option, choose left or right with a small distance."
     "\nReply with valid JSON ONLY, matching this schema:"
-    "\n{\"target_visible\": bool, \"target_bbox\": [x1,y1,x2,y2] or null,"
+    "\n{\"target_visible\": bool, \"target_location\": \"far left\"|\"left\"|\"center-left\"|\"center\"|\"center-right\"|\"right\"|\"far right\" or null,"
     " \"heading\": \"left\"|\"center\"|\"right\", \"drive_distance_m\": float, \"reason\": str}"
 )
 
 
+_LOCATION_VALUES = ["far left", "left", "center-left", "center", "center-right", "right", "far right"]
+
+
 class NavigationDecision(BaseModel):
     target_visible: bool
-    target_bbox: Optional[list[int]] = None
+    target_location: Optional[str] = None
     heading: Literal["left", "center", "right"]
     drive_distance_m: float = Field(ge=0.0, le=2.0)
     reason: str
@@ -64,8 +68,9 @@ NAV_DECISION_SCHEMA = NavigationDecision.model_json_schema()
 
 VERIFIER_SYSTEM_PROMPT = (
     "You are a visual verifier for a robot exploring a simple 3D-rendered"
-    " indoor world. A previous perception step flagged the attached image crop"
-    " as containing a specific target object. Confirm or reject that claim."
+    " indoor world. The robot's detector flagged that the target object may be"
+    " visible in this camera image, at a specific location. Confirm or reject"
+    " that claim."
     "\nThe objects are LOW-DETAIL 3D models: a real-looking label, gauge, hose,"
     " nozzle, text or fine surface detail is usually ABSENT. Do NOT require"
     " such fine details — judge by the OVERALL FORM: is this a DISCRETE OBJECT"
@@ -73,20 +78,20 @@ VERIFIER_SYSTEM_PROMPT = (
     " vertical cylinder of roughly the right proportions IS a valid fire"
     " extinguisher here; a low-poly box of the right shape IS a valid"
     " suitcase/drill/etc."
-    "\nDo still REJECT genuine background and wrong shapes: a FLAT SURFACE or a"
+    "\nFocus your judgement on the indicated location in the image. Do still"
+    " REJECT genuine background and wrong shapes: a FLAT SURFACE or a"
     " REPEATING TEXTURE (a brick wall, a floor or wall seam, a plain panel, a"
     " doorway, a shadow) is NOT the target even when its colour matches —"
-    " these are scenery, not a discrete object, and the bounding box has just"
-    " latched onto a patch of wall/floor. Also reject when the proportions or"
-    " shape are clearly wrong for the target."
-    "\nFor every crop, you must:"
+    " these are scenery, not a discrete object. Also reject when the proportions"
+    " or shape are clearly wrong for the target."
+    "\nFor every image, you must:"
     "\n  - List 1-3 features that MATCH the target (discrete-object shape,"
     "\n    proportions, colour, placement)."
     "\n  - List 1-3 features that DO NOT match (e.g. looks like a flat wall,"
     "\n    wrong proportions, part of a repeating texture)."
-    "\n  - Decide confirmed=true when the crop shows a discrete object of the"
-    "\n    right overall form, even if low-detail; confirmed=false when it is a"
-    "\n    flat/background surface or the shape is clearly wrong."
+    "\n  - Decide confirmed=true when the indicated location shows a discrete"
+    " object of the right overall form, even if low-detail; confirmed=false"
+    " when it is a flat/background surface or the shape is clearly wrong."
     "\nReply with valid JSON ONLY, matching this schema:"
     '\n{"confirmed": bool, "matches": [str, ...], "mismatches": [str, ...],'
     ' "reason": str}'
@@ -164,10 +169,8 @@ class VLMResult:
     target_visible: bool
     heading: str
     drive_distance_m: float
-    target_bbox: Optional[list[int]]
+    target_location: Optional[str]
     reason: str
-    # Dimensions of the image actually sent to the VLM (after resize). Needed
-    # so callers can rescale target_bbox into other frames (e.g. depth image).
     image_width: int = 0
     image_height: int = 0
 
@@ -194,15 +197,13 @@ def _coerce_heading(v) -> str:
     return "center"
 
 
-def _coerce_bbox(v) -> Optional[list[int]]:
+def _coerce_location(v) -> Optional[str]:
     if v is None:
         return None
-    if not isinstance(v, (list, tuple)) or len(v) != 4:
-        return None
-    try:
-        return [int(x) for x in v]
-    except (TypeError, ValueError):
-        return None
+    s = str(v).strip().lower()
+    if s in _LOCATION_VALUES:
+        return s
+    return None
 
 
 def _result_from_dict(d: dict, raw: str) -> VLMResult:
@@ -210,7 +211,7 @@ def _result_from_dict(d: dict, raw: str) -> VLMResult:
         target_visible=bool(d.get("target_visible", False)),
         heading=_coerce_heading(d.get("heading", "center")),
         drive_distance_m=_clamp_distance(d.get("drive_distance_m", 0.0)),
-        target_bbox=_coerce_bbox(d.get("target_bbox")),
+        target_location=_coerce_location(d.get("target_location")),
         reason=str(d.get("reason", d.get("reasoning", raw[:200]))),
     )
 
@@ -263,7 +264,7 @@ def _parse_vlm_response(raw: str) -> Optional[VLMResult]:
         target_visible=visible,
         heading=heading,
         drive_distance_m=dist,
-        target_bbox=None,
+        target_location=None,
         reason=raw[:200],
     )
 
@@ -282,7 +283,13 @@ class VLMClient:
 
     def start(self, ready_timeout: float = 300.0):
         from ollama import Client
+        import httpx
         self._client = Client()
+        # Preserve the auto-configured base_url (e.g. http://127.0.0.1:11434)
+        # but set a timeout — the default is None (wait forever), which blocks
+        # the agent if the cloud VLM hangs (#17).
+        base_url = self._client._client._base_url
+        self._client._client = httpx.Client(timeout=self.timeout, base_url=base_url)
 
         if self.is_cloud:
             logger.info("Cloud model %s — skipping local pre-load", self.model_name)
@@ -365,17 +372,12 @@ class VLMClient:
                 if result is not None:
                     result.image_width = sent_w
                     result.image_height = sent_h
-                    bbox_str = (
-                        f"[{result.target_bbox[0]},{result.target_bbox[1]},"
-                        f"{result.target_bbox[2]},{result.target_bbox[3]}]"
-                        if result.target_bbox else "None"
-                    )
-                    logger.info("VLM: vis=%s hdg=%s dist=%.2f bbox=%s img=%dx%d | %s",
+                    logger.info("VLM: vis=%s hdg=%s dist=%.2f loc=%s img=%dx%d | %s",
                                 result.target_visible, result.heading,
-                                result.drive_distance_m, bbox_str,
+                                result.drive_distance_m, result.target_location,
                                 sent_w, sent_h, result.reason[:100])
-                    if result.target_visible and result.target_bbox is None:
-                        logger.warning("VLM raw (visible w/o bbox): %.500s", raw)
+                    if result.target_visible and result.target_location is None:
+                        logger.warning("VLM raw (visible w/o location): %.500s", raw)
                     return result
                 logger.warning("VLM response unparseable (attempt %d/%d): %.200s", attempt, self.max_retries, raw)
 
@@ -387,44 +389,45 @@ class VLMClient:
             target_visible=False,
             heading="center",
             drive_distance_m=0.0,
-            target_bbox=None,
+            target_location=None,
             reason="VLM query failed after retries",
             image_width=sent_w,
             image_height=sent_h,
         )
 
-    def verify_candidate(self, crop, target_name: str,
+    def verify_candidate(self, image, target_name: str, location: str = "",
                          verbose: bool = False) -> Optional[VerifyResult]:
-        """Skeptical second call on a candidate crop (#10).
+        """Skeptical second call on the full camera image (#14).
 
-        Sends ``crop`` (a PIL Image — pre-cropped + upscaled by the caller)
-        with a verifier prompt. Returns the verifier's judgement, or None on
-        repeated failure.
+        Sends the full image with a location hint instead of a cropped bbox.
+        Returns the verifier's judgement, or None on repeated failure.
         """
         if self._client is None:
             raise RuntimeError("VLM client not started")
 
-        w, h = crop.size
+        w, h = image.size
         if max(w, h) > MAX_IMAGE_DIM:
             scale = MAX_IMAGE_DIM / max(w, h)
-            crop = crop.resize((int(w * scale), int(h * scale)))
-        sent_w, sent_h = crop.size
+            image = image.resize((int(w * scale), int(h * scale)))
+        sent_w, sent_h = image.size
 
         buf = io.BytesIO()
-        crop.save(buf, format="JPEG", quality=JPEG_QUALITY)
+        image.save(buf, format="JPEG", quality=JPEG_QUALITY)
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         target_natural = (target_name or "the target").replace("_", " ")
+        location_text = f" at the {location}" if location else ""
         user_prompt = (
             f"Target: {target_name} (natural language: \"{target_natural}\")\n"
-            "This crop was flagged as containing the target. Confirm or reject.\n"
+            f"The detector flagged a possible target{location_text} in this image."
+            " Confirm or reject.\n"
             "Be strict; reject vaguely similar shapes."
         )
 
         if verbose:
             logger.info("VERIFIER REQUEST · system prompt:\n%s", VERIFIER_SYSTEM_PROMPT)
             logger.info("VERIFIER REQUEST · user prompt:\n%s", user_prompt)
-            logger.info("VERIFIER REQUEST · crop sent %dx%d JPEG q%d",
+            logger.info("VERIFIER REQUEST · image sent %dx%d JPEG q%d",
                         sent_w, sent_h, JPEG_QUALITY)
 
         for attempt in range(1, self.max_retries + 1):
@@ -451,7 +454,7 @@ class VLMClient:
                 result = _parse_verify_response(raw)
                 if result is not None:
                     logger.info(
-                        "VERIFY: confirmed=%s crop=%dx%d matches=%d mismatches=%d | %s",
+                        "VERIFY: confirmed=%s img=%dx%d matches=%d mismatches=%d | %s",
                         result.confirmed, sent_w, sent_h,
                         len(result.matches), len(result.mismatches),
                         result.reason[:120],

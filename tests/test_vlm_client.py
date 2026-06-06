@@ -6,6 +6,7 @@ from agent.vlm_client import (
     VerifyResult,
     _parse_verify_response,
     _parse_vlm_response,
+    _coerce_location,
 )
 
 
@@ -16,14 +17,20 @@ class TestNavigationDecision:
         assert parsed.target_visible is False
         assert parsed.heading == "center"
         assert parsed.drive_distance_m == 1.0
-        assert parsed.target_bbox is None
+        assert parsed.target_location is None
 
-    def test_with_bbox(self):
-        raw = '{"target_visible": true, "target_bbox": [10, 20, 100, 200], "heading": "left", "drive_distance_m": 0.5, "reason": "target on left"}'
+    def test_with_location(self):
+        raw = '{"target_visible": true, "target_location": "left", "heading": "left", "drive_distance_m": 0.5, "reason": "target on left"}'
         parsed = NavigationDecision.model_validate_json(raw)
         assert parsed.target_visible is True
-        assert parsed.target_bbox == [10, 20, 100, 200]
+        assert parsed.target_location == "left"
         assert parsed.heading == "left"
+
+    def test_all_locations(self):
+        for loc in ["far left", "left", "center-left", "center", "center-right", "right", "far right"]:
+            raw = f'{{"target_visible": true, "target_location": "{loc}", "heading": "center", "drive_distance_m": 1.0, "reason": "test"}}'
+            parsed = NavigationDecision.model_validate_json(raw)
+            assert parsed.target_location == loc
 
     def test_distance_bounds(self):
         with pytest.raises(Exception):
@@ -46,24 +53,39 @@ class TestNavigationDecision:
 class TestVLMResult:
     def test_fields(self):
         r = VLMResult(target_visible=True, heading="right", drive_distance_m=1.2,
-                      target_bbox=[1, 2, 3, 4], reason="ok")
+                      target_location="center-right", reason="ok")
         assert r.target_visible is True
         assert r.heading == "right"
         assert r.drive_distance_m == 1.2
-        assert r.target_bbox == [1, 2, 3, 4]
+        assert r.target_location == "center-right"
+
+
+class TestCoerceLocation:
+    def test_valid_locations(self):
+        assert _coerce_location("left") == "left"
+        assert _coerce_location("center") == "center"
+        assert _coerce_location("far left") == "far left"
+        assert _coerce_location("center-right") == "center-right"
+
+    def test_none(self):
+        assert _coerce_location(None) is None
+
+    def test_invalid(self):
+        assert _coerce_location("above") is None
+        assert _coerce_location("") is None
 
 
 class TestParseVLMResponse:
     def test_clean_json(self):
         r = _parse_vlm_response(
-            '{"target_visible": true, "target_bbox": [5,6,7,8], "heading": "center", "drive_distance_m": 1.5, "reason": "ok"}')
+            '{"target_visible": true, "target_location": "left", "heading": "center", "drive_distance_m": 1.5, "reason": "ok"}')
         assert r.target_visible is True
         assert r.heading == "center"
         assert r.drive_distance_m == 1.5
-        assert r.target_bbox == [5, 6, 7, 8]
+        assert r.target_location == "left"
 
     def test_json_in_code_fence(self):
-        raw = '```json\n{"target_visible": false, "heading": "left", "drive_distance_m": 0.5, "reason": "wall"}\n```'
+        raw = '```json\n{"target_visible": false, "target_location": null, "heading": "left", "drive_distance_m": 0.5, "reason": "wall"}\n```'
         r = _parse_vlm_response(raw)
         assert r.target_visible is False
         assert r.heading == "left"
@@ -107,7 +129,7 @@ class TestParseVLMResponse:
         assert r.target_visible is False
         assert r.heading == "center"
         assert r.drive_distance_m == 0.5
-        assert r.target_bbox is None
+        assert r.target_location is None
 
 
 class TestVerificationDecision:
@@ -142,7 +164,6 @@ class TestParseVerifyResponse:
         assert r.confirmed is False
 
     def test_missing_fields_defaults(self):
-        # Schema is permissive in the parser path; missing arrays default empty
         r = _parse_verify_response('{"confirmed": true, "reason": "ok"}')
         assert r.confirmed is True
         assert r.matches == []
@@ -154,8 +175,6 @@ class TestParseVerifyResponse:
 
     def test_freetext_no_defaults_reject(self):
         r = _parse_verify_response("This appears to be a brick wall, not the target.")
-        # Heuristic only flips to True on a "yes ... target" phrase; everything
-        # else defaults to confirmed=False, which is the safe outcome.
         assert r.confirmed is False
 
     def test_empty_returns_none(self):

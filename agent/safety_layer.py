@@ -104,6 +104,8 @@ class ReactiveSafetyLayer:
         self.reaction_time_s = float(
             safety_cfg.get("reaction_time_s", self.REACTION_TIME_S)
         )
+        geometry_veto_cfg = bool(safety_cfg.get("geometry_veto", False))
+        self._geometry_veto = geometry_veto_cfg
 
         qos_be = QoSProfile(
             depth=5,
@@ -141,6 +143,10 @@ class ReactiveSafetyLayer:
         # only the #13 debug harness's --no-safety flag flips it so the user can
         # feel raw control. Still publishes via THIS timer (no /cmd_vel race).
         self._passthrough = False
+        # Geometry veto enabled: when True, LiDAR-based linear caps and rotation
+        # vetoes are applied. When False, only bumper back-off active — the VLM
+        # sees clearance in the prompt and chooses its own distances.
+        self._geometry_veto = False
         # Change-detection for cmd_vel logging (last published values).
         self._last_pub_lin: Optional[float] = None
         self._last_pub_ang: Optional[float] = None
@@ -173,6 +179,14 @@ class ReactiveSafetyLayer:
         logger.warning("Safety passthrough %s — collision filtering %s",
                        "ON" if enabled else "OFF",
                        "DISABLED" if enabled else "active")
+
+    def set_geometry_veto(self, enabled: bool) -> None:
+        """Enable/disable LiDAR geometry veto. When disabled, only bumper
+        back-off is active (#14). The VLM sees LiDAR clearance in the prompt
+        and drives safely on its own; the geometry veto caused oscillation."""
+        with self._lock:
+            self._geometry_veto = bool(enabled)
+        logger.info("Safety geometry veto %s", "ON" if enabled else "OFF")
 
     def is_blocked(self) -> bool:
         """True while a bumper-triggered back-off is in progress."""
@@ -417,6 +431,7 @@ class ReactiveSafetyLayer:
             backup_end = self._backup_until_sim_s
             backup_dir = self._backup_angular_dir
             passthrough = self._passthrough
+            geometry_veto = self._geometry_veto
 
         twist = Twist()
 
@@ -456,54 +471,50 @@ class ReactiveSafetyLayer:
         ang = desired_ang
         veto_components: List[str] = []
 
-        # Clearance-based velocity cap. For forward motion: the smallest
-        # (x - FRONT) over the forward corridor. For rearward: mirror. Cap
-        # the commanded velocity so the robot can always brake before
-        # entering the cushion. Hard-zero when clearance ≤ cushion.
-        if lin > 0.0:
-            fwd_clear = self._directional_clearance_m(points, direction_is_forward=True)
-            cap = self._safe_linear_cap(fwd_clear)
-            if cap < abs(lin):
-                if cap == 0.0:
-                    veto_components.append(f"fwd<{fwd_clear:.2f}m")
-                else:
-                    veto_components.append(f"fwd-cap<{fwd_clear:.2f}m→{cap:.2f}")
-                lin = cap
-        elif lin < 0.0:
-            rear_clear = self._directional_clearance_m(points, direction_is_forward=False)
-            cap = self._safe_linear_cap(rear_clear)
-            if cap < abs(lin):
-                if cap == 0.0:
-                    veto_components.append(f"rear<{rear_clear:.2f}m")
-                else:
-                    veto_components.append(f"rear-cap<{rear_clear:.2f}m→{cap:.2f}")
-                lin = -cap  # rearward speed magnitude, preserve sign
+        if geometry_veto:
+            # Clearance-based velocity cap. For forward motion: the smallest
+            # (x - FRONT) over the forward corridor. For rearward: mirror. Cap
+            # the commanded velocity so the robot can always brake before
+            # entering the cushion. Hard-zero when clearance ≤ cushion.
+            if lin > 0.0:
+                fwd_clear = self._directional_clearance_m(points, direction_is_forward=True)
+                cap = self._safe_linear_cap(fwd_clear)
+                if cap < abs(lin):
+                    if cap == 0.0:
+                        veto_components.append(f"fwd<{fwd_clear:.2f}m")
+                    else:
+                        veto_components.append(f"fwd-cap<{fwd_clear:.2f}m→{cap:.2f}")
+                    lin = cap
+            elif lin < 0.0:
+                rear_clear = self._directional_clearance_m(points, direction_is_forward=False)
+                cap = self._safe_linear_cap(rear_clear)
+                if cap < abs(lin):
+                    if cap == 0.0:
+                        veto_components.append(f"rear<{rear_clear:.2f}m")
+                    else:
+                        veto_components.append(f"rear-cap<{rear_clear:.2f}m→{cap:.2f}")
+                    lin = -cap  # rearward speed magnitude, preserve sign
 
-        # Rotation: directional veto. Block the turn only if rotating THIS way
-        # would bring the perimeter closer to an obstacle already inside the
-        # cushion; rotating away (the wedge escape) stays allowed.
-        if abs(ang) > 1e-3 and not self._rotation_allowed(points, ang):
-            veto_components.append(
-                f"rot<{self._rotation_clearance_m(points):.2f}m")
-            ang = 0.0
+            # Rotation: directional veto. Block the turn only if rotating THIS way
+            # would bring the perimeter closer to an obstacle already inside the
+            # cushion; rotating away (the wedge escape) stays allowed.
+            if abs(ang) > 1e-3 and not self._rotation_allowed(points, ang):
+                veto_components.append(
+                    f"rot<{self._rotation_clearance_m(points):.2f}m")
+                ang = 0.0
 
-        # Deadlock recovery: the upstream wants to move but every component
-        # got vetoed (forward into a wall, or rotation that would close on it).
-        # First try to pivot toward the more-open side — the directional veto
-        # allows that exactly when it opens clearance, which is the wedge
-        # escape. If even that is blocked (walls on both sides), back out when
-        # the rear permits. This is what un-sticks the planner's stop-and-turn
-        # commits in narrow divider-wall gaps; it fires for teleop too.
-        wants_motion = desired_lin > 0.0 or abs(desired_ang) > 1e-3
-        if wants_motion and lin == 0.0 and abs(ang) < 1e-3:
-            slide = 0.7 if left_min >= right_min else -0.7
-            if self._rotation_allowed(points, slide):
-                ang = slide
-            else:
-                rev = self._wedge_reverse_speed(points)
-                if rev > 0.0:
-                    lin = -rev
-                    veto_components.append(f"wedge-rev-{rev:.2f}")
+            # Deadlock recovery: the upstream wants to move but every component
+            # got vetoed (forward into a wall, or rotation that would close on it).
+            wants_motion = desired_lin > 0.0 or abs(desired_ang) > 1e-3
+            if wants_motion and lin == 0.0 and abs(ang) < 1e-3:
+                slide = 0.7 if left_min >= right_min else -0.7
+                if self._rotation_allowed(points, slide):
+                    ang = slide
+                else:
+                    rev = self._wedge_reverse_speed(points)
+                    if rev > 0.0:
+                        lin = -rev
+                        veto_components.append(f"wedge-rev-{rev:.2f}")
 
         veto_active = bool(veto_components)
         if veto_active and not self._lidar_veto_active:

@@ -26,6 +26,7 @@ actions:
   _publish_interval_s: 0.1
 
 safety:
+  geometry_veto: false
   min_range_m: 0.25
   forward_arc_deg: 30
 

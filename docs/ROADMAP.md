@@ -16,35 +16,23 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Raise detection reliability (mechanism fixed; per-run variance remains) · open
-**Binding constraint was NOT detector recall — it was the verifier.** Full-log
-diagnosis (`scripts/run_diag.sh`) found the skeptical verifier rejected the
-simulator's LOW-POLY target models ("a stylized 3D model lacking a real
-extinguisher's hose/gauge") even with the robot centred at 1.4 m. The detector
-flagged the target fine. Fixes landed (commits ef1bf72, 08b158b):
-- **Sim-aware verifier** — confirm a discrete object of the right overall form,
-  reject flat/repeating surfaces (red brick walls = the basement's FP source).
-- **Active scan** (6×60° step-stop-shoot) so the camera looks at cornered
-  targets the open-space-seeking planner steers away from.
-- **Approach-then-verify** — verify+publish only within 2 m (accurate crop +
-  projection); far sightings are approach-only; far force-drive removed (it
-  rammed wall-occluded projections → 11 collisions/seed).
-- **Precise final-approach heading** from the bbox centre (90° HFOV) to reach <1 m.
-- **Edge-bbox guard** — a bbox sliced by the frame edge is approach-only, killing
-  the dominant close-range FP (peripheral wall clutter).
+### 1. Raise detection reliability (simplified pipeline, re-benchmark pending) · open
+**#14 simplified the detect→verify→act pipeline:** removed bbox, replaced with
+location text + full-image verifier + column-based depth projection + VLM-owns-distance +
+bumper-only safety. The old bottlenecks (bbox inaccuracy, depth-override micro-commitments,
+edge-touch FP gating, safety-geometry oscillation) are removed. Awaiting re-benchmark.
+Next: sweep 5 seeds, compare with pre-#14 baseline.
 
-Result: first confirmations of the stylized sim targets. Full success demonstrated
-on seed 1 (fire_extinguisher, 0.71 m + TP, 0 FP, score 75.7) and seed 3 (drill,
-0.80 m + TP, 0 FP). **0 FP** with the edge guard. **Remaining lever = per-run
-variance**: the robot only detects when it gets a close, centred, confirmed look,
-which happens ~30-50 % of runs/seed — cornered targets in tight spots (robot can't
-spin within ~0.4 m of walls) are reached but not always *seen*. Next:
-- Improve the odds of a centred close look (scan-on-low-clearance trigger; lower
-  the rotation-clearance gate; persistent navigation to a sighting's world position).
-- **Depth-pattern consistency on bbox** as a *sanity* check only (free-standing
-  object vs wall patch), to further harden precision.
+### 2. Fix scan rotation overshoot · [#15](https://github.com/thaije/derpbot-vlm/issues/15)
+Robot rotates ~180° per scan step instead of 60° because `_scan_accum` stays at 0°
+— the main loop blocks on cloud VLM while the robot keeps spinning uncontrolled.
+With geometry veto disabled, rotation is unfiltered. Needs: stop the robot between
+scan steps, robust accum tracking, or yaw-target-based rotation.
 
-### 2. Benchmark suite on more seeds · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
+### 3. ~~Fix agent hangs idle — zero VLM output~~ · [#17](https://github.com/thaije/derpbot-vlm/issues/17) ✓
+Fixed: HTTP timeout propagated to ollama client; scan state machine handles failed VLM submissions.
+
+### 4. Benchmark suite on more seeds · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
 Done for 5 seeds with the #12 safety stack (gemma4 1/5 success). Target success=true ≥ 3/5 unmet — gated by item 1 (detection frequency). Re-run after a detection improvement lands.
 
 ---

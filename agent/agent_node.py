@@ -23,7 +23,6 @@ READY_FLAG = os.environ.get("DERPBOT_READY_FLAG", "/tmp/derpbot_agent_ready")
 VLM_INTERVAL_DEFAULT_S = 0.3
 VLM_INTERVAL_APPROACH_S = 0.2
 COMMIT_REPLAN_FRACTION = 0.25
-APPROACH_STANDOFF_M = 0.5  # stop this far short of the target when range is known
 
 # Active scan (#3 detection-frequency). The planner drives toward open space,
 # which steers AWAY from cornered targets — the robot reaches proximity but the
@@ -37,37 +36,11 @@ SCAN_STEP_RAD = 2.0 * math.pi / SCAN_STEPS
 SCAN_SETTLE_S = 0.4                     # sim-seconds to stand still before a shot
 SCAN_ROTATE_TIMEOUT_S = 4.0            # give up rotating a step (fully wedged) and shoot anyway
 SCAN_ANG_SPEED = 0.7                    # rad/s sweep speed
-SCAN_PERIOD_S = 20.0                   # min sim-seconds of exploration between scans
+SCAN_AFTER_NO_DETECT_S = 30.0          # min sim-seconds since last confirmed detection → scan
 SCAN_MIN_ROT_CLEARANCE_M = 0.20        # need ≥ this rotation clearance to bother sweeping
                                        # (else the robot is in a corridor too tight to spin)
 
-# A SMALL bbox touching the image edge is a partial / peripheral view — wall
-# clutter sliced by the frame boundary, the dominant close-range FP source (#3).
-# Treat it as approach-only so the precise approach re-centres a real target
-# before it can publish. A LARGE edge-touching bbox is the opposite case — a
-# close target filling the frame — and MUST still publish, so the edge test is
-# gated on a small area (an over-broad edge test blocked legit <0.5 m detections).
-BBOX_EDGE_MARGIN = 12          # in Gemma 0-1000 units
-BBOX_EDGE_MIN = BBOX_EDGE_MARGIN
-BBOX_EDGE_MAX = 1000 - BBOX_EDGE_MARGIN
-BBOX_EDGE_MAX_AREA_FRAC = 0.25  # only edge-reject bboxes covering < this of the frame
-
-# Approach-then-verify (#3). Detection confidence grows with proximity: a far
-# target is a few blurry pixels the verifier can't confirm ("blurry red shape,
-# lacks defining characteristics"). So APPROACH is decoupled from PUBLISH — the
-# robot drives toward ANY detector sighting to close the distance, but only
-# publishes once the verifier confirms it. A verifier reject is only taken as a
-# genuine "not the target" when the crop was close enough to judge reliably
-# (≤ VERIFY_TRUST_RANGE_M); a far reject means "too far to tell" → keep
-# approaching. This also bounds FP-chasing: a real false positive gets
-# approached at most to this range, then a close reject ends the chase.
-VERIFY_TRUST_RANGE_M = 2.0
-
-# Verifier (#10): when the detector flags target_visible=true, crop the bbox
-# region + a margin, upscale if needed, and run a second skeptical VLM call
-# before publishing.
-VERIFY_BBOX_PAD_FRAC = 0.20    # 20 % padding around bbox before cropping
-VERIFY_MIN_CROP_PX = 224       # upscale crops smaller than this on the long edge
+CAMERA_HFOV_RAD = 1.5708
 
 
 def load_config(path: str = "config/vlm_config.yaml") -> dict:
@@ -196,6 +169,7 @@ class AgentNode:
         self._scan_settle_until = 0.0
         self._scan_rotate_deadline = 0.0
         self._last_scan_end_sim = -1e9
+        self._last_confirmed_sim = -1e9
 
     @staticmethod
     def _declare_sim_time_param():
@@ -270,7 +244,7 @@ class AgentNode:
             "    target may be small or low-contrast (e.g. a grey pipe on a grey\n"
             "    floor, a dark object in shadow). If you see ANY object that\n"
             "    plausibly matches the target, set target_visible=true and fill\n"
-            "    target_bbox.\n"
+            "    target_location.\n"
             "  - Which heading (left/center/right) leads toward the target or open space?\n"
             "  - When the target is NOT visible, prefer headings marked 'unexplored' over\n"
             "    'mostly previously visited' to cover new ground.\n"
@@ -279,119 +253,64 @@ class AgentNode:
             "Reply JSON only."
         )
 
-    def _crop_candidate(self, bbox: list, pad_frac: float = VERIFY_BBOX_PAD_FRAC,
-                          min_px: int = VERIFY_MIN_CROP_PX):
-        """Crop the candidate bbox from the latest camera image, with padding,
-        and upscale tiny crops on the long edge. Returns a PIL.Image or None.
-
-        bbox is in Gemma's 0-1000 normalised space (see invariants in STATE.md).
-        We crop from the raw camera image — NOT from the resized VLM-input
-        image — so that small targets get the full sensor resolution before
-        any further downscale in the verifier path.
-        """
-        with self._image_lock:
-            img = self._latest_image
-        if img is None or bbox is None or len(bbox) != 4:
-            return None
-
-        w, h = img.size
-        x1n, y1n, x2n, y2n = bbox
-        x1 = max(0.0, min(x1n, x2n)) / 1000.0
-        y1 = max(0.0, min(y1n, y2n)) / 1000.0
-        x2 = max(x1n, x2n) / 1000.0
-        y2 = max(y1n, y2n) / 1000.0
-
-        bw, bh = (x2 - x1), (y2 - y1)
-        x1 = max(0.0, x1 - pad_frac * bw)
-        y1 = max(0.0, y1 - pad_frac * bh)
-        x2 = min(1.0, x2 + pad_frac * bw)
-        y2 = min(1.0, y2 + pad_frac * bh)
-
-        px1, py1 = int(x1 * w), int(y1 * h)
-        px2, py2 = int(x2 * w), int(y2 * h)
-        if px2 - px1 < 2 or py2 - py1 < 2:
-            return None
-
-        crop = img.crop((px1, py1, px2, py2))
-        cw, ch = crop.size
-        long_edge = max(cw, ch)
-        if long_edge < min_px:
-            scale = min_px / long_edge
-            crop = crop.resize((int(cw * scale), int(ch * scale)))
-        return crop
-
-    def _save_annotated_frame(self, bbox: list, target_name: str,
+    def _save_annotated_frame(self, location: str, target_name: str,
                                verdict: str = "visible"):
-        """Save an image with the VLM bbox drawn on it, if --save-frames is on."""
+        """Save an image with the location text drawn on it, if --save-frames is on."""
         if not self._frame_dir:
             return
         img = self._get_latest_image()
         if img is None:
             return
-        w, h = img.size
-        x1n, y1n, x2n, y2n = bbox
-        px1 = max(0, int(min(x1n, x2n) / 1000.0 * w))
-        py1 = max(0, int(min(y1n, y2n) / 1000.0 * h))
-        px2 = min(w, int(max(x1n, x2n) / 1000.0 * w))
-        py2 = min(h, int(max(y1n, y2n) / 1000.0 * h))
-
         annotated = img.copy()
         draw = ImageDraw.Draw(annotated)
-        line_w = max(2, int(min(w, h) / 150))
-        draw.rectangle([px1, py1, px2, py2], outline="lime", width=line_w)
-        label = f"{target_name} ({verdict})"
-        font_size = max(14, int(min(w, h) / 25))
+        label = f"{target_name} @ {location} ({verdict})"
+        font_size = max(14, int(min(img.size) / 25))
         try:
             font = ImageFont.truetype(
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
         except OSError:
             font = ImageFont.load_default(size=font_size)
-        text_y = max(0, py1 - font_size - 4)
-        draw.text((px1 + 2, text_y), label, fill="lime", font=font)
+        draw.text((4, 4), label, fill="lime", font=font)
 
         seq = self._frame_seq
         self._frame_seq += 1
-        path = os.path.join(self._frame_dir, f"frame_{seq:04d}_bbox.png")
+        path = os.path.join(self._frame_dir, f"frame_{seq:04d}_loc.png")
         try:
             annotated.save(path)
             logger.info("Annotated frame: %s", os.path.basename(path))
         except Exception as e:
             logger.warning("Annotated frame save failed: %s", e)
 
-    def _verify_detection(self, bbox: list, target_obj: str) -> tuple[bool, str]:
-        """Crop + skeptical second VLM call. Returns (confirmed, reason).
+    def _verify_detection(self, location: str, target_obj: str) -> tuple[bool, str]:
+        """Full-image skeptical second VLM call. Returns (confirmed, reason).
 
-        Synchronous — the cloud VLM round-trip is the same ~3 s as a normal
-        query, and candidates are rare. Reason is the verifier's explanation
-        (or a sentinel describing why the verifier was skipped/failed) so
-        callers can log it in the structured CANDIDATE line.
+        Synchronous — sends the full camera image with a location hint
+        instead of a bbox crop. The verifier judges the whole scene.
         """
         if not self._verifier_enabled:
             return True, "verifier disabled"
-        crop = self._crop_candidate(bbox)
-        if crop is None:
-            logger.warning("VERIFY: no crop available for bbox=%s — rejecting", bbox)
-            return False, "no crop"
-        res = self.vlm.verify_candidate(crop, target_obj)
+        img = self._get_latest_image()
+        if img is None:
+            logger.warning("VERIFY: no image available — rejecting")
+            return False, "no image"
+        res = self.vlm.verify_candidate(img, target_obj, location=location)
         if res is None:
             return False, "verifier returned None"
         if not res.confirmed:
             logger.info("VERIFY REJECT: %s — %s", target_obj, res.reason[:160])
         return bool(res.confirmed), res.reason or ""
 
-    def _project_target_from_bbox(self, bbox: list | None,
-                                    vlm_image_w: int | None = None,
-                                    vlm_image_h: int | None = None):
-        """Returns (x_map, y_map, depth_m) for the target bbox, or None.
+    def _project_target_from_location(self, location: str | None):
+        """Returns (x_map, y_map, depth_m) for the target location, or None.
 
-        Gemma 4 (cloud and e2b) emits bbox coordinates in its native 0-1000
-        normalized space, independent of input image resolution. We rescale
-        that 0-1000 box onto the depth image. ``vlm_image_w/h`` are accepted
-        for forward-compatibility (other VLMs may use pixel coords) but are
-        currently unused.
+        Maps the VLM location string to a bearing, reads a depth column at
+        that bearing, and back-projects to the map frame.
         """
-        del vlm_image_w, vlm_image_h  # reserved for future non-Gemma backends
-        if bbox is None or len(bbox) != 4:
+        if location is None:
+            return None
+        from agent.depth_projection import location_to_bearing, back_project_from_location
+        bearing = location_to_bearing(location)
+        if bearing is None:
             return None
         with self._depth_lock:
             depth = self._depth_image
@@ -399,39 +318,25 @@ class AgentNode:
             K = self._camera_K
         if depth is None or K is None:
             return None
-
-        d_h, d_w = depth.shape[:2]
-        sx = d_w / 1000.0
-        sy = d_h / 1000.0
-        scaled = [int(bbox[0] * sx), int(bbox[1] * sy),
-                  int(bbox[2] * sx), int(bbox[3] * sy)]
-
-        from agent.depth_projection import back_project_bbox
         odom_x, odom_y, odom_yaw = self._get_odom()
-        return back_project_bbox(scaled, depth, K, odom_x, odom_y, odom_yaw)
+        return back_project_from_location(location, depth, K, odom_x, odom_y, odom_yaw)
 
-    def _publish_detection(self, target_type: str, bbox: list | None = None,
-                            proj: tuple[float, float, float] | None = None,
-                            vlm_image_w: int | None = None,
-                            vlm_image_h: int | None = None):
+    def _publish_detection(self, target_type: str, location: str | None = None,
+                            proj: tuple[float, float, float] | None = None):
         if self._detection_pub is None:
             return
         from std_msgs.msg import Header
         from vision_msgs.msg import Detection2D, ObjectHypothesisWithPose
         from agent.depth_projection import stable_track_id
 
-        if proj is None:
-            proj = self._project_target_from_bbox(bbox, vlm_image_w, vlm_image_h)
+        if proj is None and location is not None:
+            proj = self._project_target_from_location(location)
 
         if proj is None:
-            # Without a real (bbox + depth) projection we can't locate the
-            # target. The old "fallback to robot pose" produced almost-always
-            # false positives (robot pose ≠ target pose). Drop the detection
-            # so we don't pollute the submission log with FPs.
             logger.info(
-                "DETECTION SUPPRESSED: %s — no bbox or depth projection "
-                "(bbox=%s, vlm_img=%sx%s)",
-                target_type, bbox, vlm_image_w, vlm_image_h,
+                "DETECTION SUPPRESSED: %s — no depth projection "
+                "(location=%s)",
+                target_type, location,
             )
             return
 
@@ -459,21 +364,15 @@ class AgentNode:
         logger.info("DETECTION: %s id=%s at (%.2f, %.2f) %s",
                     target_type, track, tgt_x, tgt_y, log_extra)
 
-    # Camera horizontal FOV (derpbot RGBD, from the URDF). Used to turn a bbox
-    # centre into a precise bearing for the final approach.
-    CAMERA_HFOV_RAD = 1.5708
-
-    def _precise_heading_offset(self, bbox) -> float | None:
-        """Bearing (rad, +ve = left/CCW) from the camera axis to the bbox
-        centre, so the planner can steer straight at the target instead of the
-        coarse ±30° buckets. bbox is Gemma 0-1000 space. None if unavailable."""
-        if not bbox or len(bbox) != 4:
+    def _heading_from_location(self, location: str | None) -> float | None:
+        """Bearing (rad, +ve = left/CCW) from the camera axis for a VLM location
+        string, so the planner can steer straight at the target instead of the
+        coarse ±30° buckets. None if unavailable."""
+        from agent.depth_projection import location_to_bearing
+        if location is None:
             return None
-        fx = 0.5 * (bbox[0] + bbox[2]) / 1000.0      # 0 = left edge, 1 = right edge
-        # Camera +x is to the right; planner convention is +left/CCW, so a
-        # target on the right (fx > 0.5) needs a negative (CW) offset.
-        offset = -(fx - 0.5) * self.CAMERA_HFOV_RAD
-        return max(-self.CAMERA_HFOV_RAD / 2, min(self.CAMERA_HFOV_RAD / 2, offset))
+        bearing = location_to_bearing(location)
+        return bearing
 
     @staticmethod
     def _norm_angle(a: float) -> float:
@@ -490,76 +389,42 @@ class AgentNode:
             time.sleep(self._debug_pause_s)
 
     def _evaluate_candidate(self, result, sim_now: float):
-        """For a result flagged target_visible+bbox: at close range depth-override
-        the drive distance, run the skeptical verifier (#10), log the CANDIDATE
-        line and decide the outcome. Returns ``(proj, publish_ok, close)``:
-        ``proj`` is the depth projection (x, y, depth) or None; ``publish_ok``
-        gates publication; ``close`` is True when the sighting is within trust
-        range (used to pick precise vs coarse approach heading).
+        """For a result flagged target_visible+location: verify on the full
+        image, log the CANDIDATE line, and decide the outcome.
+        Returns ``(proj, publish_ok)``: ``proj`` is the depth projection
+        (x, y, depth) or None; ``publish_ok`` gates publication.
 
-        Outcomes (see VERIFY_TRUST_RANGE_M / approach-then-verify rationale):
-          - FAR (depth > trust range or no depth) → INVESTIGATE: keep visible,
-            drift toward it on the VLM's own heading/distance, no publish.
-          - CLOSE + verifier CONFIRM → publish_ok=True, precise approach.
-          - CLOSE + verifier REJECT → genuine no: demote, resume exploration.
-        Shared by the normal loop and the scan so both behave identically."""
-        if not (result.target_visible and result.target_bbox):
-            logger.info("CANDIDATE: skip (vis=%s bbox=%s)",
-                        result.target_visible, result.target_bbox is not None)
-            return None, False, False
+        Simplified from the bbox-based approach: no depth-override, no edge
+        logic, no trust range. The VLM's own drive_distance_m stands (it sees
+        LiDAR clearance). The verifier always runs on the full image with the
+        location hint — no crop quality concern.
+        """
+        if not (result.target_visible and result.target_location):
+            logger.info("CANDIDATE: skip (vis=%s loc=%s)",
+                        result.target_visible, result.target_location)
+            return None, False
 
-        proj = self._project_target_from_bbox(
-            result.target_bbox, result.image_width, result.image_height)
-        depth_m = proj[2] if proj is not None else None
         target_obj = self._mission.get("target_object", "unknown")
+        location = result.target_location
+        proj = self._project_target_from_location(location)
+        depth_m = proj[2] if proj is not None else None
         proj_str = (f"({proj[0]:.2f},{proj[1]:.2f})@{depth_m:.2f}m"
                     if proj is not None else "NONE")
 
-        bx1, by1, bx2, by2 = result.target_bbox
-        touches_edge = (min(bx1, bx2) <= BBOX_EDGE_MIN or max(bx1, bx2) >= BBOX_EDGE_MAX
-                        or min(by1, by2) <= BBOX_EDGE_MIN or max(by1, by2) >= BBOX_EDGE_MAX)
-        area_frac = (abs(bx2 - bx1) * abs(by2 - by1)) / 1.0e6   # bbox over 1000×1000 frame
-        # peripheral sliver = touches the edge AND is small; a large frame-filling
-        # bbox at the edge is a close target and is allowed through.
-        edge_touch = touches_edge and area_frac < BBOX_EDGE_MAX_AREA_FRAC
-
-        # Far sightings, OR a bbox sliced by the image edge (partial/peripheral
-        # view — the dominant close-range FP): don't verify or publish. Keep the
-        # VLM's own clearance-aware heading/distance so the robot drifts toward
-        # it and the precise approach re-centres a real target; clutter at the
-        # frame boundary never centres and so never publishes.
-        if depth_m is None or depth_m > VERIFY_TRUST_RANGE_M or edge_touch:
-            outcome = "INVESTIGATE-edge" if edge_touch else "INVESTIGATE"
-            logger.info(
-                "CANDIDATE: target=%s bbox=%s proj=%s verifier=SKIP outcome=%s",
-                target_obj, result.target_bbox, proj_str, outcome)
-            self._save_annotated_frame(result.target_bbox, target_obj, outcome)
-            return proj, False, False   # keep target_visible=True → gentle approach
-
-        # Close enough to trust: pin the drive distance to the measured range
-        # (accurate at short range) so we stop just short of the proximity
-        # radius, then run the skeptical verifier and act on it.
-        from agent.planner import MAX_DISTANCE_M
-        result.drive_distance_m = min(
-            MAX_DISTANCE_M, max(0.0, depth_m - APPROACH_STANDOFF_M))
-        logger.info("DEPTH OVERRIDE: target depth=%.2fm → commit %.2fm",
-                    depth_m, result.drive_distance_m)
-        verified, verify_reason = self._verify_detection(
-            result.target_bbox, target_obj)
+        verified, verify_reason = self._verify_detection(location, target_obj)
         logger.info(
-            "CANDIDATE: target=%s bbox=%s proj=%s verifier=%s outcome=%s reason=%r",
-            target_obj, result.target_bbox, proj_str,
-            "ACCEPT" if verified else "REJECT",
+            "CANDIDATE: target=%s loc=%s proj=%s verifier=%s reason=%r",
+            target_obj, location, proj_str,
             "ACCEPT" if verified else "REJECT", verify_reason[:120])
         if not verified:
-            self._save_annotated_frame(result.target_bbox, target_obj, "REJECT")
+            self._save_annotated_frame(location, target_obj, "REJECT")
             result.target_visible = False
-            result.target_bbox = None
+            result.target_location = None
             proj = None
-            result.drive_distance_m = min(result.drive_distance_m, 0.8)
-            return None, False, True
-        self._save_annotated_frame(result.target_bbox, target_obj, "CONFIRM")
-        return proj, True, True
+            return None, False
+        self._save_annotated_frame(location, target_obj, "CONFIRM")
+        self._last_confirmed_sim = sim_now
+        return proj, True
 
     # ── Active scan (step-stop-shoot rotation sweep) ────────────────────────
     # Rotation cooperates with the safety layer instead of fighting it: the
@@ -638,12 +503,20 @@ class AgentNode:
             self.safety.command(0.0, 0.0, src="scan-settle")
             if sim_now >= self._scan_settle_until and self._vlm_future is None:
                 self._submit_vlm_query()
-                self._scan_phase = "query"
+                if self._vlm_future is not None:
+                    self._scan_phase = "query"
+                else:
+                    logger.warning("SCAN: VLM submission failed (no image?) — ending scan")
+                    self._end_scan(sim_now, reason="vlm_submit_failed")
             return
 
         if self._scan_phase == "query":
             self.safety.command(0.0, 0.0, src="scan-query")
-            if self._vlm_future is None or not self._vlm_future.done():
+            if self._vlm_future is None:
+                logger.warning("SCAN: VLM future is None in query phase — ending scan")
+                self._end_scan(sim_now, reason="vlm_future_none")
+                return
+            if not self._vlm_future.done():
                 return
             try:
                 result = self._vlm_future.result()
@@ -655,18 +528,13 @@ class AgentNode:
                 logger.info("SCAN shot %d/%d: vis=%s | %s",
                             self._scan_shots + 1, SCAN_STEPS,
                             result.target_visible, result.reason[:80])
-                proj, publish_ok, close = self._evaluate_candidate(result, sim_now)
+                proj, publish_ok = self._evaluate_candidate(result, sim_now)
                 if result.target_visible:
-                    # A sighting (confirmed or too-far-to-judge) ends the scan:
-                    # leave the sweep to drive toward it. Publish only if the
-                    # verifier confirmed. Precise bearing only when close.
-                    offset = self._precise_heading_offset(result.target_bbox) if close else None
+                    offset = self._heading_from_location(result.target_location)
                     if publish_ok:
                         target_obj = self._mission.get("target_object", "unknown")
                         self._publish_detection(
-                            target_obj, result.target_bbox, proj=proj,
-                            vlm_image_w=result.image_width,
-                            vlm_image_h=result.image_height)
+                            target_obj, location=result.target_location, proj=proj)
                     self.planner.accept_decision(
                         result, yaw, x, y, sim_now, heading_offset_rad=offset)
                     self._end_scan(sim_now, reason="approaching sighting")
@@ -691,6 +559,7 @@ class AgentNode:
     def _submit_vlm_query(self) -> None:
         image = self._get_latest_image()
         if image is None:
+            logger.warning("VLM: no camera image available — skipping query")
             return
         prompt = self._build_decision_prompt()
         self._vlm_future = self._vlm_executor.submit(self.vlm.query, image, prompt)
@@ -758,28 +627,17 @@ class AgentNode:
 
                     if result is not None:
                         x, y, yaw = self._get_odom()
-                        # Depth-override + verifier gate (shared with the scan
-                        # path). Keeps target_visible to APPROACH a sighting
-                        # (confirmed or too-far-to-judge); publishes only when
-                        # the verifier confirmed it.
-                        proj, publish_ok, close = self._evaluate_candidate(result, sim_now)
+                        proj, publish_ok = self._evaluate_candidate(result, sim_now)
                         offset = None
                         if result.target_visible:
-                            # Re-querying (not scanning) should follow an
-                            # approach, so push the scan cadence forward.
                             self._last_scan_end_sim = sim_now
-                            # Precise bearing only for close sightings; far ones
-                            # use the VLM's coarser, clearance-aware heading.
-                            if close:
-                                offset = self._precise_heading_offset(result.target_bbox)
+                            offset = self._heading_from_location(result.target_location)
                         self.planner.accept_decision(
                             result, yaw, x, y, sim_now, heading_offset_rad=offset)
                         if publish_ok:
                             target_obj = self._mission.get("target_object", "unknown")
                             self._publish_detection(
-                                target_obj, result.target_bbox, proj=proj,
-                                vlm_image_w=result.image_width,
-                                vlm_image_h=result.image_height,
+                                target_obj, location=result.target_location, proj=proj,
                             )
                         self._debug_pause()
 
@@ -792,18 +650,11 @@ class AgentNode:
                     lin, ang = self.planner.compute_command(x, y, yaw, sim_now)
                     self.safety.command(lin, ang, src="planner")
 
-                # Periodic stop-and-scan. Forward-only queries reach the target
-                # but rarely centre it (the planner steers toward open space,
-                # away from cornered objects); the sweep guarantees the camera
-                # looks every way. Fire purely on cadence — the query pipeline
-                # keeps the planner busy commit-to-commit, so we PREEMPT the
-                # current commit + any in-flight query rather than waiting for
-                # an idle gap that never comes. A fresh sighting pushes
-                # _last_scan_end_sim forward (see _evaluate_candidate callers),
-                # so a scan never interrupts an approach.
+                # Scan-on-no-detection: trigger a sweep when no detection has
+                # been confirmed for SCAN_AFTER_NO_DETECT_S seconds.
                 if (not self.planner.in_approach()
                         and not self.safety.is_blocked()
-                        and (sim_now - self._last_scan_end_sim) >= SCAN_PERIOD_S
+                        and (sim_now - self._last_confirmed_sim) >= SCAN_AFTER_NO_DETECT_S
                         and self.safety.rotation_clearance_m() >= SCAN_MIN_ROT_CLEARANCE_M):
                     self.planner.cancel("scan")
                     self._vlm_future = None
