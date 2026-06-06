@@ -41,13 +41,16 @@ SCAN_PERIOD_S = 20.0                   # min sim-seconds of exploration between 
 SCAN_MIN_ROT_CLEARANCE_M = 0.20        # need ≥ this rotation clearance to bother sweeping
                                        # (else the robot is in a corridor too tight to spin)
 
-# A bbox touching the image edge is a partial / peripheral view — often wall
-# clutter sliced by the frame boundary, the dominant close-range FP source
-# (#3). Treat such a sighting as approach-only so the precise-approach re-centres
-# a real target before it can publish; genuine peripheral clutter never centres.
+# A SMALL bbox touching the image edge is a partial / peripheral view — wall
+# clutter sliced by the frame boundary, the dominant close-range FP source (#3).
+# Treat it as approach-only so the precise approach re-centres a real target
+# before it can publish. A LARGE edge-touching bbox is the opposite case — a
+# close target filling the frame — and MUST still publish, so the edge test is
+# gated on a small area (an over-broad edge test blocked legit <0.5 m detections).
 BBOX_EDGE_MARGIN = 12          # in Gemma 0-1000 units
 BBOX_EDGE_MIN = BBOX_EDGE_MARGIN
 BBOX_EDGE_MAX = 1000 - BBOX_EDGE_MARGIN
+BBOX_EDGE_MAX_AREA_FRAC = 0.25  # only edge-reject bboxes covering < this of the frame
 
 # Approach-then-verify (#3). Detection confidence grows with proximity: a far
 # target is a few blurry pixels the verifier can't confirm ("blurry red shape,
@@ -461,8 +464,12 @@ class AgentNode:
                     if proj is not None else "NONE")
 
         bx1, by1, bx2, by2 = result.target_bbox
-        edge_touch = (min(bx1, bx2) <= BBOX_EDGE_MIN or max(bx1, bx2) >= BBOX_EDGE_MAX
-                      or min(by1, by2) <= BBOX_EDGE_MIN or max(by1, by2) >= BBOX_EDGE_MAX)
+        touches_edge = (min(bx1, bx2) <= BBOX_EDGE_MIN or max(bx1, bx2) >= BBOX_EDGE_MAX
+                        or min(by1, by2) <= BBOX_EDGE_MIN or max(by1, by2) >= BBOX_EDGE_MAX)
+        area_frac = (abs(bx2 - bx1) * abs(by2 - by1)) / 1.0e6   # bbox over 1000×1000 frame
+        # peripheral sliver = touches the edge AND is small; a large frame-filling
+        # bbox at the edge is a close target and is allowed through.
+        edge_touch = touches_edge and area_frac < BBOX_EDGE_MAX_AREA_FRAC
 
         # Far sightings, OR a bbox sliced by the image edge (partial/peripheral
         # view — the dominant close-range FP): don't verify or publish. Keep the
