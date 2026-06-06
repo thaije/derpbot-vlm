@@ -16,11 +16,33 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Raise detection frequency (first TP landed; now 1/5 → target ≥3/5) · open
-Post-#12 re-benchmark: **`gemma4:31b-cloud` is the new default** — the only model that produced a TP/success (1/5 seeds, fire_extinguisher). Every other model got 0 detections in 5 seeds despite reaching the target (qwen3-vl 0.16 m proximity). So navigation is solved; **detection/publish frequency is the bottleneck.** Levers by ROI:
-- **Investigate verifier over-rejection**: most models show flag_rate > 0 (VLM says it sees the target) but 0 published detections → the verifier and/or depth-projection is dropping nearly everything. A/B verifier ON/OFF on gemma4 across seeds; check how many demotions/projection-failures occur per flagged candidate.
-- **Approach-then-recant at close range** (#9 idea 2): when the planner enters approach mode < 1 m from a candidate, fire a fresh full-FOV VLM query to confirm/recant.
-- **Depth-pattern consistency on bbox** as a *sanity* check only (depth-as-primary is not desired).
+### 1. Raise detection reliability (mechanism fixed; per-run variance remains) · open
+**Binding constraint was NOT detector recall — it was the verifier.** Full-log
+diagnosis (`scripts/run_diag.sh`) found the skeptical verifier rejected the
+simulator's LOW-POLY target models ("a stylized 3D model lacking a real
+extinguisher's hose/gauge") even with the robot centred at 1.4 m. The detector
+flagged the target fine. Fixes landed (commits ef1bf72, 08b158b):
+- **Sim-aware verifier** — confirm a discrete object of the right overall form,
+  reject flat/repeating surfaces (red brick walls = the basement's FP source).
+- **Active scan** (6×60° step-stop-shoot) so the camera looks at cornered
+  targets the open-space-seeking planner steers away from.
+- **Approach-then-verify** — verify+publish only within 2 m (accurate crop +
+  projection); far sightings are approach-only; far force-drive removed (it
+  rammed wall-occluded projections → 11 collisions/seed).
+- **Precise final-approach heading** from the bbox centre (90° HFOV) to reach <1 m.
+- **Edge-bbox guard** — a bbox sliced by the frame edge is approach-only, killing
+  the dominant close-range FP (peripheral wall clutter).
+
+Result: first confirmations of the stylized sim targets. Full success demonstrated
+on seed 1 (fire_extinguisher, 0.71 m + TP, 0 FP, score 75.7) and seed 3 (drill,
+0.80 m + TP, 0 FP). **0 FP** with the edge guard. **Remaining lever = per-run
+variance**: the robot only detects when it gets a close, centred, confirmed look,
+which happens ~30-50 % of runs/seed — cornered targets in tight spots (robot can't
+spin within ~0.4 m of walls) are reached but not always *seen*. Next:
+- Improve the odds of a centred close look (scan-on-low-clearance trigger; lower
+  the rotation-clearance gate; persistent navigation to a sighting's world position).
+- **Depth-pattern consistency on bbox** as a *sanity* check only (free-standing
+  object vs wall patch), to further harden precision.
 
 ### 2. Benchmark suite on more seeds · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
 Done for 5 seeds with the #12 safety stack (gemma4 1/5 success). Target success=true ≥ 3/5 unmet — gated by item 1 (detection frequency). Re-run after a detection improvement lands.

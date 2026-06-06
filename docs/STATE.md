@@ -7,46 +7,36 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**basement_find/easy re-benchmark with the #12 safety stack (reaction cap + directional veto + recovery). Verifier ON, speed 1, n=1 per (model, seed). Ranked on the priority metrics (success → tp_count), NOT overall_score.**
+**Default model `gemma4:31b-cloud`, speed 1.** The #3 detection rework (sim-aware
+verifier + active scan + precise approach + approach-then-verify + area-aware
+edge guard; commits ef1bf72, 08b158b, ddd506b) **fixed the real bottleneck — the
+verifier was rejecting the sim's low-poly target models, not detector recall.**
 
-| Model | success | TPs | avg col | avg near | avg exp % | best minD | Notes |
-|---|---|---|---|---|---|---|---|
-| **`gemma4:31b-cloud`** | **1/5** | **1** | 5.6 | 2.2 | 86.7 | 0.81 | **Only model that ever publishes a valid detection.** s1 TP = fire_extinguisher, 0 FP |
-| `qwen3-vl:235b-cloud` | 0/5 | 0 | 4.4 | 2.8 | 95.9 | **0.16** | Navigates to target (0.16 m) but 0 detections in 5 seeds |
-| `gemini-3-flash-preview:cloud` | 0/5 | 0 | 4.8 | 17.6 | 89.3 | 0.21 | Reaches proximity, 0 detections; near-miss spikes |
-| `kimi-k2.6:cloud` | 0/2 | 0 | 0.5 | 0.5 | 78.5 | 2.34 | Very safe but low exploration, no detections |
-| `mistral-large-3:675b-cloud` | 0/2 | 0 | 11.5 | 36.0 | 99.1 | 0.75 | Trigger-happy flagging, 0 valid detections, worst collisions |
+**Seed → target** (deterministic, `rng(seed+5555).choice(pool)`): 1=fire_extinguisher,
+2=pipe_sewer_floor, 3=drill, 4=drink_can_on_box, 5=fire_extinguisher.
 
-**Default model: `gemma4:31b-cloud`** (`config/vlm_config_cloud.yaml`). Promoted after this eval — it is the only model producing a TP/success. qwen3-vl preserved at `vlm_config_cloud_qwen3vl.yaml`. The #11 ranking (qwen3-vl by overall_score) was misleading: navigation models score high but never detect.
-**Detection — not navigation — is the binding constraint.** Multiple models reach <0.2 m proximity; only gemma4 publishes a valid detection. Target object varies by seed (seed 1 = fire_extinguisher; the detectable one). gemma4 detects fire_extinguisher where qwen3-vl/gemini miss it on the same seed.
+**Demonstrated:** full success (proximity <1 m + TP, 0 FP) on individual runs of
+seed 1 (fire_extinguisher, 0.71 m, score 75.7) and seed 3 (drill, 0.80 m, score
+58.3) — the first confirmations of the stylized sim targets in project history.
 
-### Verifier impact (round 2, A/B same model)
+**Not yet reliable.** A clean 5-seed sweep (n=1) is high-variance: detection fires
+only when the robot gets a close, centred, confirmed look (~30-50 % of runs/seed),
+and red-cylinder distractors are occasionally confirmed as the target (FP). One
+sweep before the area-edge fix landed 0/5 success + 2 FP; the area fix re-enabled
+the close-range publishes the broad edge guard had been blocking. **Target ≥3/5
+success is NOT met — per-run reliability is the open problem.** Re-sweep the final
+code (`scripts/sweep.sh "1 2 3 4 5"`) before trusting any delta.
 
-| Model | Seed | Score ON | Score OFF | FP ON | FP OFF | Col ON | Col OFF |
-|---|---|---|---|---|---|---|---|
-| gemma4 | 1 | 10.8 | **20.0** | 2 | 1 | 4 | **0** |
-| gemma4 | 2 | 12.0 | **20.0** | 0 | 0 | 4 | **0** |
-| mistral | 1 | **8.0** | 5.2 | 0 | 4 | 9 | 25 |
-| mistral | 2 | **13.2** | 6.8 | 0 | 9 | 3 | 6 |
+**Why variance dominates (the residual limits):**
+- Cornered targets (fire_extinguisher, pipe) sit where the robot reaches them only
+  in spots too tight to rotate (<0.4 m to walls) → can't scan there; must spot them
+  from open space with line-of-sight to the corner, which is luck-of-the-path.
+- The sim target is "a red/low-poly shape"; so are some distractors and wall pipes
+  → the verifier confirms the wrong one sometimes (precision ceiling at low res).
+- ~20-30 VLM queries per 300 s run (cloud latency) is a thin sampling of the scene.
 
-Verifier wins decisively on trigger-happy models (mistral) and is neutral-to-mildly-negative on conservative ones (gemma4). Default policy keeps it ON.
-
-### "Too harsh" rejections
-
-Across 60+ verifier rejection events: **one** case where the rejected candidate would have been a TP (gemma4 s1, projected (2.18, 6.47), d_gt 1.39 m, reason "blurred brick wall"). Real but rare failure mode.
-
-**Trend over recent iterations (n=1 per seed, gemma4 cloud):**
-
-| Iteration | Seed 1 | Seed 2 | Det / FP s1 | Det / FP s2 |
-|---|---|---|---|---|
-| Latency mitigation (0d30927) | 4.0 | 4.0 | 0 / 0 | 0 / 0 |
-| Detection rate (4100be2) | 6.8 | 9.2 | 4 / 4 | 3 / 3 |
-| Verifier landed (7db699a) | 9.2 | 9.2 | 0 / 0 | 0 / 0 |
-| Verifier (qwen3-vl) | 16.0 | 16.0 | 0 / 0 | 0 / 0 |
-
-**Outstanding work:** the first-ever TP/success landed (gemma4, seed 1, fire_extinguisher) after the #12 safety stack. The bottleneck is now **detection frequency**: gemma4 publishes a valid detection on only 1/5 seeds and other models on 0/5, despite navigating to the target. Target ≥3/5 success is unmet. Levers: raise gemma4's detection/publish rate (verifier may be over-rejecting — flag_rate > 0 but detections ≈ 0 for most models), depth-pattern consistency on the bbox, close-range confirmation prompt.
-
-**Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds. Proximity ≤ 1 m + valid detection.
+**Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds
+(proximity ≤ 1 m + valid detection). Next levers in `ROADMAP.md` item 1.
 
 ### Evaluation metrics (priority order — use for model comparison)
 
@@ -107,7 +97,13 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 **agent_node loop constants** (`agent/agent_node.py`):
 - `VLM_INTERVAL_DEFAULT_S = 0.3`, `VLM_INTERVAL_APPROACH_S = 0.2` — min gap between submits
 - `COMMIT_REPLAN_FRACTION = 0.25` — submit next VLM query when commit 25% done so the result arrives near commit end (masks cloud latency)
-- `APPROACH_STANDOFF_M = 0.5` — when bbox+depth available, overrides VLM's drive_distance_m to `clamp(depth - 0.5, 0, MAX_DISTANCE_M)`
+- `APPROACH_STANDOFF_M = 0.5` — when a CLOSE bbox+depth is available, overrides VLM's drive_distance_m to `clamp(depth - 0.5, 0, MAX_DISTANCE_M)`
+- `VERIFY_TRUST_RANGE_M = 2.0` — sightings ≤ this are verified + published (crop/projection reliable); farther ones are approach-only (no verify, no publish, see #3)
+
+**Active scan** (`agent/agent_node.py`, #3) — step-stop-shoot rotation sweep so the camera looks every way (the planner steers toward open space, away from cornered targets):
+- `SCAN_STEPS = 6` × `SCAN_STEP_RAD = 60°` (90° HFOV → 30° overlap); `SCAN_PERIOD_S = 20` cadence; `SCAN_MIN_ROT_CLEARANCE_M = 0.20` gate
+- Robot STOPS, settles (`SCAN_SETTLE_S = 0.4`), shoots one frame per heading — stationary is required for a valid depth projection. Progress = actual yaw rotated (`_scan_accum`), so it cooperates with the safety rotation veto; `SCAN_ROTATE_TIMEOUT_S = 4.0` shoots anyway if wedged.
+- Triggers on cadence by PREEMPTING the current commit + in-flight query (the query pipeline never leaves an idle gap). A sighting pushes `_last_scan_end_sim` forward so a scan never interrupts an approach.
 
 **VLM (Ollama, cloud `gemma4:31b-cloud`):** Decision schema
 - Output: `{target_visible, target_bbox, heading, drive_distance_m, reason}`
@@ -122,15 +118,25 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - VLM cycle (agent_node): submit when planner idle (immediate replan) OR mid-commit past 25% progress and `vlm_interval_s` elapsed (0.3 default, 0.2 approach)
 - `options.temperature = 0.3`
 
-**Detection publishing** (when target_visible=true):
-- **Verifier gate (#10).** Every candidate is cropped from the raw camera
-  frame (bbox + 20 % padding, upscaled to ≥ 224 px on the long edge) and sent
-  through a second VLM call (`VLMClient.verify_candidate`) with a skeptical
-  system prompt that defaults to REJECT and requires the model to list
-  matching AND mismatching features. Only `confirmed=True` candidates are
-  published; rejected candidates also have `target_visible` demoted to false
-  so the planner doesn't enter approach mode chasing an FP. Verifier uses
-  `temperature=0.1`. Cost: +1 cloud round-trip per candidate (~3 s).
+**Detection publishing** — approach-then-verify (#3, supersedes #10's verify-everything):
+- **Far sighting (depth > `VERIFY_TRUST_RANGE_M` or no depth):** do NOT verify or
+  publish — the crop is a few pixels and the projection is imprecise / often
+  wall-occluded. Keep `target_visible` on the VLM's own clearance-aware
+  heading/distance so the robot drifts toward it and resolves it once close.
+- **Close sighting (depth ≤ 2 m):** pin drive distance to the measured range,
+  then run the **verifier gate (#10)** — crop the raw frame (bbox + 20 % pad,
+  upscaled ≥ 224 px) → second skeptical VLM call (`verify_candidate`,
+  `temperature=0.1`). `confirmed` → publish; reject → demote `target_visible`,
+  resume exploration. Only close, confirmed candidates publish (accurate
+  position + the verifier judges a clear crop, not a blur).
+- **Verifier is SIM-AWARE (#3).** Sim targets are LOW-POLY 3D models; the old
+  "demand a real extinguisher's hose/gauge" prompt rejected every one. Prompt
+  now confirms a DISCRETE object of the right form (low detail expected) and
+  rejects FLAT/repeating surfaces (brick walls, seams) — accepts the stylized
+  target without reopening brick FPs.
+- **Precise final approach (#3).** When close + target_visible, the planner
+  heading offset is the exact bearing to the bbox centre (90° HFOV), not the
+  ±30° bucket, so the robot can centre the target and reach < 1 m.
 - Topic: `/derpbot_0/detections` (vision_msgs/Detection2DArray)
 - Bbox interpretation: **Gemma 4 0-1000 normalised coords** (`agent_node._project_target_from_bbox` rescales 0-1000 → depth dims directly; does NOT use the input-image pixel dims, which was the prior bug).
 - Position: depth-back-projected from VLM bbox center via camera intrinsics
@@ -164,7 +170,9 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Line-of-sight required.** Detection through walls counts as FP_LOS, not TP.
 - **Cloud models may return free text instead of JSON.** Parser handles strict / fenced / embedded / heuristic via `_parse_vlm_response`.
 - **`ollama signin` required before cloud models.** Run once; auth persists.
-- **Detection currently FP-biased.** The VLM correctly identifies the target's visual class but localises a similar-looking shape elsewhere (wall edge, floor seam) in the scene. Multi-frame voting on the *same hallucinated spot* doesn't help — observed three sightings collapsing to the same wrong world position. Verifier (#10) is the current mitigation.
+- **The verifier MUST be sim-aware (#3).** Sim targets are LOW-POLY 3D models with no real-world detail (hose, gauge, label). A strict "looks like a real fire extinguisher" verifier rejected EVERY true target ("a stylized 3D model lacking defining characteristics") even with the robot centred at 1.4 m — this, not the detector, was the binding constraint. Prompt now confirms a *discrete object of the right overall form* and rejects *flat/repeating surfaces* (brick walls, seams). That accepts the stylized target while still rejecting red brick — the right discriminator (the basement walls ARE red brick, the original false-positive source).
+- **Detection confidence scales with proximity (#3).** Both classification and depth-projection are unreliable for a few-pixel far object — so verify + publish ONLY within `VERIFY_TRUST_RANGE_M` (2 m). Far sightings are approach-only: drift toward them on the VLM's own clearance-aware heading; do NOT force-drive to the projected point (it is often behind a wall → ramming, 11 collisions on one seed). `stable_track_id` collapses the approach's repeat sightings into one detection so the early imprecise ones don't tank precision.
+- **Active scan is how the robot looks at cornered targets (#3).** The planner steers toward open space, away from cornered objects, so the forward camera rarely centres them (baseline reached 0.16 m yet detected nothing). The periodic in-place sweep fixes this — but only where there's room to rotate; a robot at <0.4 m from walls (the closest approach to a cornered target) physically cannot spin, so it must spot the target from open space with line-of-sight to the corner. This is the residual reliability limit.
 - **Verifier prompt asymmetry is intentional.** Detector prompt rewards aggressive scanning ("see anything that fits"); verifier prompt rewards skepticism ("default to reject, list counter-evidence"). Mentioning calibration / framing terminology to the model breaks it (see "Gemma convention" failure above); keep both prompts in plain domain language.
 - **Verifier failure path defaults to REJECT.** If the verifier call errors or returns unparseable JSON, the candidate is rejected (safer for FP than letting it through). This means cloud outages will block detections entirely — accept that trade-off until / unless we run a local-VLM fallback.
 - **Verifier blocks the agent main loop for one cloud round-trip per candidate** (~3 s on a healthy cloud, 30+ s on a bad day). Safety layer keeps publishing at 20 Hz from its own ROS timer during the stall, so collisions are still filtered. If verifier latency dominates a mission budget, move it to the same ThreadPoolExecutor as the detector query.
@@ -223,6 +231,13 @@ rm -f /tmp/derpbot_agent_ready
 # to --out-dir. Open `ros2 run rqt_image_view rqt_image_view` for the camera.
 .venv/bin/python3.12 -m agent.debug_node --config config/vlm_config_cloud.yaml
 #   --no-safety  raw control (safety passthrough)   --target X  skip mission fetch
+
+# Automated single-seed run + FULL agent-log capture + funnel summary (#3):
+#   scripts/run_diag.sh <seed> [config] [speed]    # log → logs/agent_seed<N>_*.log
+# Multi-seed sweep with a result table (target, prox, minD, TP/FP, exp):
+#   scripts/sweep.sh "1 2 3 4 5" [config]
+# NOTE: do NOT edit agent/*.py while a sweep runs — each seed re-imports the
+# code at launch, so a mid-edit file crashes the next run.
 
 # Run tests
 PYTHONPATH=. .venv/bin/python3.12 -m pytest tests/ -v -p no:launch_testing
