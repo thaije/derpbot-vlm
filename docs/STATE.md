@@ -224,13 +224,17 @@ rm -f /tmp/derpbot_agent_ready
 # Other cloud models tested in #11 live alongside: vlm_config_cloud_gemma4.yaml,
 # _kimik26.yaml, _mistrallarge3.yaml, _gemini3flashpreview.yaml. Disable the
 # verifier with a *_noverify.yaml variant (sets verifier.enabled: false).
+#   --save-frames DIR   save annotated frames (bbox overlay) every detection
 
 # Detection-debugging harness (#13): manual teleop + live production VLM I/O.
 # Drive with w/a/s/d, 'v' = single decision+verifier query w/ full prompt+raw
 # response printed, 'e' = auto observe-only queries. Saves frames + transcript
-# to --out-dir. Open `ros2 run rqt_image_view rqt_image_view` for the camera.
+# to --out-dir. Bbox-annotated frames saved as frame_NNNN_bbox.png alongside
+# the raw frame. Open `ros2 run rqt_image_view rqt_image_view` for the camera.
 .venv/bin/python3.12 -m agent.debug_node --config config/vlm_config_cloud.yaml
-#   --no-safety  raw control (safety passthrough)   --target X  skip mission fetch
+#   --no-safety  raw control (safety passthrough)
+#   --target X   skip mission fetch
+#   --out-dir .  where to write frames + transcript (default: current dir)
 
 # Automated single-seed run + FULL agent-log capture + funnel summary (#3):
 #   scripts/run_diag.sh <seed> [config] [speed]    # log → logs/agent_seed<N>_*.log

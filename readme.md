@@ -81,8 +81,18 @@ Controls (also printed at startup and on `?`):
 | `q` | quit |
 
 Frames and a full transcript are written to `--out-dir` (default
-`/tmp/derpbot_debug`). Useful flags: `--no-safety` (raw control, no collision
-filtering), `--target <name>` (skip the mission server). See `--help` for all.
+`.`). When a detection has a bounding box, an annotated frame with the
+bbox and label drawn on it is saved as `frame_NNNN_bbox.png` alongside
+the raw `frame_NNNN.png`. Useful flags: `--no-safety` (raw control, no
+collision filtering), `--target <name>` (skip the mission server). See
+`--help` for all.
+
+The production agent also supports saving annotated frames during
+autonomous runs:
+
+```bash
+python3.12 -m agent.agent_node --config config/vlm_config_cloud.yaml --save-frames ./debug_frames
+```
 
 ## Configuration
 

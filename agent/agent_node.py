@@ -10,7 +10,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Event, Lock, Thread
 
 import yaml
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,7 +91,7 @@ def fetch_mission(url: str, max_retries: int = 30, retry_interval: float = 2.0) 
 
 
 class AgentNode:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, frame_dir: str | None = None):
         import rclpy
         from rclpy.node import Node
         from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -177,8 +177,14 @@ class AgentNode:
         self._mission = None
         self._done_event = Event()
         self._detection_counter = 0
+        inf_cfg = config.get("inference", {})
+        self._debug_pause_s = float(inf_cfg.get("debug_pause_s", 0.0))
         self._vlm_executor = ThreadPoolExecutor(max_workers=1)
         self._vlm_future: Future | None = None
+        self._frame_dir = frame_dir
+        if frame_dir:
+            os.makedirs(frame_dir, exist_ok=True)
+            self._frame_seq = 0
 
         # Active-scan state machine (see SCAN_* constants).
         self._scan_active = False
@@ -314,6 +320,44 @@ class AgentNode:
             crop = crop.resize((int(cw * scale), int(ch * scale)))
         return crop
 
+    def _save_annotated_frame(self, bbox: list, target_name: str,
+                               verdict: str = "visible"):
+        """Save an image with the VLM bbox drawn on it, if --save-frames is on."""
+        if not self._frame_dir:
+            return
+        img = self._get_latest_image()
+        if img is None:
+            return
+        w, h = img.size
+        x1n, y1n, x2n, y2n = bbox
+        px1 = max(0, int(min(x1n, x2n) / 1000.0 * w))
+        py1 = max(0, int(min(y1n, y2n) / 1000.0 * h))
+        px2 = min(w, int(max(x1n, x2n) / 1000.0 * w))
+        py2 = min(h, int(max(y1n, y2n) / 1000.0 * h))
+
+        annotated = img.copy()
+        draw = ImageDraw.Draw(annotated)
+        line_w = max(2, int(min(w, h) / 150))
+        draw.rectangle([px1, py1, px2, py2], outline="lime", width=line_w)
+        label = f"{target_name} ({verdict})"
+        font_size = max(14, int(min(w, h) / 25))
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+        except OSError:
+            font = ImageFont.load_default(size=font_size)
+        text_y = max(0, py1 - font_size - 4)
+        draw.text((px1 + 2, text_y), label, fill="lime", font=font)
+
+        seq = self._frame_seq
+        self._frame_seq += 1
+        path = os.path.join(self._frame_dir, f"frame_{seq:04d}_bbox.png")
+        try:
+            annotated.save(path)
+            logger.info("Annotated frame: %s", os.path.basename(path))
+        except Exception as e:
+            logger.warning("Annotated frame save failed: %s", e)
+
     def _verify_detection(self, bbox: list, target_obj: str) -> tuple[bool, str]:
         """Crop + skeptical second VLM call. Returns (confirmed, reason).
 
@@ -439,6 +483,12 @@ class AgentNode:
             a += 2.0 * math.pi
         return a
 
+    def _debug_pause(self) -> None:
+        if self._debug_pause_s > 0:
+            logger.info("DEBUG PAUSE: %.1fs (detector→verifier→planner done)",
+                        self._debug_pause_s)
+            time.sleep(self._debug_pause_s)
+
     def _evaluate_candidate(self, result, sim_now: float):
         """For a result flagged target_visible+bbox: at close range depth-override
         the drive distance, run the skeptical verifier (#10), log the CANDIDATE
@@ -454,6 +504,8 @@ class AgentNode:
           - CLOSE + verifier REJECT → genuine no: demote, resume exploration.
         Shared by the normal loop and the scan so both behave identically."""
         if not (result.target_visible and result.target_bbox):
+            logger.info("CANDIDATE: skip (vis=%s bbox=%s)",
+                        result.target_visible, result.target_bbox is not None)
             return None, False, False
 
         proj = self._project_target_from_bbox(
@@ -481,6 +533,7 @@ class AgentNode:
             logger.info(
                 "CANDIDATE: target=%s bbox=%s proj=%s verifier=SKIP outcome=%s",
                 target_obj, result.target_bbox, proj_str, outcome)
+            self._save_annotated_frame(result.target_bbox, target_obj, outcome)
             return proj, False, False   # keep target_visible=True → gentle approach
 
         # Close enough to trust: pin the drive distance to the measured range
@@ -499,11 +552,13 @@ class AgentNode:
             "ACCEPT" if verified else "REJECT",
             "ACCEPT" if verified else "REJECT", verify_reason[:120])
         if not verified:
+            self._save_annotated_frame(result.target_bbox, target_obj, "REJECT")
             result.target_visible = False
             result.target_bbox = None
             proj = None
             result.drive_distance_m = min(result.drive_distance_m, 0.8)
             return None, False, True
+        self._save_annotated_frame(result.target_bbox, target_obj, "CONFIRM")
         return proj, True, True
 
     # ── Active scan (step-stop-shoot rotation sweep) ────────────────────────
@@ -524,14 +579,14 @@ class AgentNode:
         self._scan_dir = 1.0
         self._scan_settle_until = sim_now + SCAN_SETTLE_S
         self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
-        self.safety.command(0.0, 0.0)
+        self.safety.command(0.0, 0.0, src="scan-stop")
         logger.info("SCAN: start (%d shots × %.0f°)",
                     SCAN_STEPS, math.degrees(SCAN_STEP_RAD))
 
     def _end_scan(self, sim_now: float, reason: str = "complete") -> None:
         self._scan_active = False
         self._last_scan_end_sim = sim_now
-        self.safety.command(0.0, 0.0)
+        self.safety.command(0.0, 0.0, src="scan-stop")
         logger.info("SCAN: end (%s)", reason)
 
     def _scan_after_shot(self, sim_now: float) -> None:
@@ -557,10 +612,14 @@ class AgentNode:
             return
 
         if self._scan_phase == "rotate":
-            self._scan_accum += abs(self._norm_angle(yaw - self._scan_last_yaw))
+            delta = abs(self._norm_angle(yaw - self._scan_last_yaw))
+            self._scan_accum += delta
             self._scan_last_yaw = yaw
             if self._scan_accum >= SCAN_STEP_RAD:
-                self.safety.command(0.0, 0.0)
+                logger.info("SCAN: step rotated %.1f° (target %.0f°), settling",
+                            math.degrees(self._scan_accum),
+                            math.degrees(SCAN_STEP_RAD))
+                self.safety.command(0.0, 0.0, src="scan-settle")
                 self._scan_phase = "settle"
                 self._scan_settle_until = sim_now + SCAN_SETTLE_S
             elif sim_now >= self._scan_rotate_deadline:
@@ -568,22 +627,22 @@ class AgentNode:
                 # the current heading anyway, then move on.
                 logger.info("SCAN: rotate timeout (accum %.0f°) — shooting current heading",
                             math.degrees(self._scan_accum))
-                self.safety.command(0.0, 0.0)
+                self.safety.command(0.0, 0.0, src="scan-settle")
                 self._scan_phase = "settle"
                 self._scan_settle_until = sim_now + SCAN_SETTLE_S
             else:
-                self.safety.command(0.0, self._scan_dir * SCAN_ANG_SPEED)
+                self.safety.command(0.0, self._scan_dir * SCAN_ANG_SPEED, src="scan-rotate")
             return
 
         if self._scan_phase == "settle":
-            self.safety.command(0.0, 0.0)
+            self.safety.command(0.0, 0.0, src="scan-settle")
             if sim_now >= self._scan_settle_until and self._vlm_future is None:
                 self._submit_vlm_query()
                 self._scan_phase = "query"
             return
 
         if self._scan_phase == "query":
-            self.safety.command(0.0, 0.0)
+            self.safety.command(0.0, 0.0, src="scan-query")
             if self._vlm_future is None or not self._vlm_future.done():
                 return
             try:
@@ -611,6 +670,7 @@ class AgentNode:
                     self.planner.accept_decision(
                         result, yaw, x, y, sim_now, heading_offset_rad=offset)
                     self._end_scan(sim_now, reason="approaching sighting")
+                    self._debug_pause()
                     return
             self._scan_after_shot(sim_now)
             return
@@ -721,15 +781,16 @@ class AgentNode:
                                 vlm_image_w=result.image_width,
                                 vlm_image_h=result.image_height,
                             )
+                        self._debug_pause()
 
                 # Drive: planner → safety
                 if self.planner.is_idle() or self.safety.is_blocked():
-                    self.safety.command(0.0, 0.0)
+                    self.safety.command(0.0, 0.0, src="idle")
                 else:
                     x, y, yaw = self._get_odom()
                     self.memory.mark(x, y)
                     lin, ang = self.planner.compute_command(x, y, yaw, sim_now)
-                    self.safety.command(lin, ang)
+                    self.safety.command(lin, ang, src="planner")
 
                 # Periodic stop-and-scan. Forward-only queries reach the target
                 # but rarely centre it (the planner steers toward open space,
@@ -795,10 +856,13 @@ class AgentNode:
 def main(args=None):
     parser = argparse.ArgumentParser(description="DerpBot VLM Agent")
     parser.add_argument("--config", default="config/vlm_config.yaml", help="Path to config file")
+    parser.add_argument("--save-frames", default=None, metavar="DIR",
+                        help="Save annotated frames with VLM bboxes to DIR "
+                             "(default: off; use '.' for cwd)")
     cli_args = parser.parse_args()
 
     config = load_config(cli_args.config)
-    agent = AgentNode(config)
+    agent = AgentNode(config, frame_dir=cli_args.save_frames)
 
     def shutdown_handler(sig, frame):
         logger.info("Shutdown signal received")

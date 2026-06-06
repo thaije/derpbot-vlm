@@ -13,6 +13,10 @@ inference:
   rate_hz: 0.5
   max_retries: 3
   timeout_s: 60.0
+  # Debug pause (wall-clock seconds) between VLM decision calls. 0 = off.
+  # Useful for stepping through robot behaviour visually. The robot freezes
+  # (safety layer still publishes zero velocity) so you can inspect the scene.
+  debug_pause_s: 0.0
 
 actions:
   forward:

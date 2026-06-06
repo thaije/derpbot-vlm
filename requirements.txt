@@ -1,6 +1,7 @@
 ollama
 Pillow
 pydantic
+pytest
 pyyaml
 numpy<2
 opencv-python-headless

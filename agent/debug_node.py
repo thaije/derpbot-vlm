@@ -39,6 +39,8 @@ import time
 import tty
 from threading import Thread
 
+from PIL import Image, ImageDraw, ImageFont
+
 from agent.agent_node import AgentNode, fetch_mission, load_config
 
 logger = logging.getLogger("debug_node")
@@ -59,6 +61,8 @@ HELP = (
     "  e   toggle AUTO query mode (observe-only, decision only)\n"
     "  p   toggle detection publishing      f toggle safety filtering\n"
     "  ?   this help        q quit\n"
+    "\n"
+    "  Frames with bounding boxes are saved as frame_NNNN_bbox.png\n"
 )
 
 
@@ -87,10 +91,12 @@ class DebugNode(AgentNode):
     def _target_object(self) -> str:
         return (self._mission or {}).get("target_object", "unknown")
 
-    def _save_frame(self, seq: int):
+    def _save_frame(self, seq: int, bbox=None, label=None):
         img = self._get_latest_image()
         if img is None:
             return None
+        if bbox is not None:
+            img = self._annotate_bbox(img, bbox, label)
         path = os.path.join(self._out_dir, f"frame_{seq:04d}.png")
         try:
             img.save(path)
@@ -98,6 +104,48 @@ class DebugNode(AgentNode):
         except Exception as e:
             logger.warning("Frame save failed: %s", e)
             return None
+
+    def _save_annotated(self, seq: int, bbox: list, target_name: str,
+                        status: str):
+        """Save an annotated copy (raw frame + bbox overlay) alongside the
+        raw frame. Uses ``_bbox`` suffix so it's co-located with the raw one."""
+        img = self._get_latest_image()
+        if img is None:
+            return
+        annotated = self._annotate_bbox(img, bbox, f"{target_name} ({status})")
+        path = os.path.join(self._out_dir, f"frame_{seq:04d}_bbox.png")
+        try:
+            annotated.save(path)
+            logger.info("Annotated frame saved: %s", os.path.basename(path))
+        except Exception as e:
+            logger.warning("Annotated frame save failed: %s", e)
+
+    @staticmethod
+    def _annotate_bbox(img: Image.Image, bbox: list, label: str | None) -> Image.Image:
+        """Draw a bounding box and label on a copy of the image.
+
+        bbox is in Gemma 0-1000 normalised coords [x1, y1, x2, y2].
+        """
+        img = img.copy()
+        w, h = img.size
+        x1n, y1n, x2n, y2n = bbox
+        px1 = max(0, int(min(x1n, x2n) / 1000.0 * w))
+        py1 = max(0, int(min(y1n, y2n) / 1000.0 * h))
+        px2 = min(w, int(max(x1n, x2n) / 1000.0 * w))
+        py2 = min(h, int(max(y1n, y2n) / 1000.0 * h))
+
+        draw = ImageDraw.Draw(img)
+        line_w = max(2, int(min(w, h) / 150))
+        draw.rectangle([px1, py1, px2, py2], outline="lime", width=line_w)
+        if label:
+            font_size = max(14, int(min(w, h) / 25))
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+            except OSError:
+                font = ImageFont.load_default(size=font_size)
+            text_y = max(0, py1 - font_size - 4)
+            draw.text((px1 + 2, text_y), label, fill="lime", font=font)
+        return img
 
     def _report_projection(self, bbox):
         """Print depth back-projection outcome for a bbox (or why it failed)."""
@@ -151,22 +199,29 @@ class DebugNode(AgentNode):
             result.drive_distance_m, result.target_bbox)
         logger.info("PARSED REASON: %s", result.reason)
 
+        if result.target_visible and result.target_bbox:
+            self._save_annotated(seq, result.target_bbox, target, "visible")
+
         if not (result.target_visible and result.target_bbox):
             logger.info("No bbox candidate → skipping verifier + projection")
             logger.info("=" * 70)
             return
 
         # Verifier (same crop + skeptical second call as production).
+        verdict = None
         crop = self._crop_candidate(result.target_bbox)
         if crop is None:
             logger.warning("VERIFIER: could not crop bbox %s", result.target_bbox)
         else:
             vres = self.vlm.verify_candidate(crop, target, verbose=True)
             if vres is not None:
+                verdict = "CONFIRM" if vres.confirmed else "REJECT"
                 logger.info(
                     "VERIFIER VERDICT: %s  matches=%s  mismatches=%s",
-                    "CONFIRM" if vres.confirmed else "REJECT",
-                    vres.matches, vres.mismatches)
+                    verdict, vres.matches, vres.mismatches)
+
+        if verdict is not None:
+            self._save_annotated(seq, result.target_bbox, target, verdict)
 
         proj = self._report_projection(result.target_bbox)
         if self._publish_enabled and proj is not None:
@@ -195,6 +250,11 @@ class DebugNode(AgentNode):
                     result.reason[:90])
                 if result.target_visible and result.target_bbox:
                     self._report_projection(result.target_bbox)
+                    seq = self._seq
+                    self._seq += 1
+                    self._save_frame(seq)
+                    self._save_annotated(seq, result.target_bbox,
+                                         self._target_object(), "visible (auto)")
                     logger.info("  (press 'v' to run the verifier on this view)")
             return
 
@@ -309,7 +369,7 @@ def main(args=None):
     parser = argparse.ArgumentParser(description="DerpBot VLM debug harness (#13)")
     parser.add_argument("--config", default="config/vlm_config_cloud.yaml",
                         help="Path to VLM config (use the model you want to debug)")
-    parser.add_argument("--out-dir", default="/tmp/derpbot_debug",
+    parser.add_argument("--out-dir", default=".",
                         help="Where to write the transcript log + saved frames")
     parser.add_argument("--no-safety", action="store_true",
                         help="Teleop with NO collision filtering (raw control)")

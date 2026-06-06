@@ -141,6 +141,10 @@ class ReactiveSafetyLayer:
         # only the #13 debug harness's --no-safety flag flips it so the user can
         # feel raw control. Still publishes via THIS timer (no /cmd_vel race).
         self._passthrough = False
+        # Change-detection for cmd_vel logging (last published values).
+        self._last_pub_lin: Optional[float] = None
+        self._last_pub_ang: Optional[float] = None
+        self._last_cmd_src: str = ""
 
         node.create_timer(1.0 / self.PUBLISH_HZ, self._publish_tick)
 
@@ -153,11 +157,13 @@ class ReactiveSafetyLayer:
 
     # ------------------------------------------------------------------ API
 
-    def command(self, linear_x: float, angular_z: float) -> None:
+    def command(self, linear_x: float, angular_z: float, src: str = "") -> None:
         """Upstream desired velocity — applied subject to safety filters."""
         with self._lock:
             self._desired_lin = float(linear_x)
             self._desired_ang = float(angular_z)
+            if src:
+                self._last_cmd_src = src
 
     def set_passthrough(self, enabled: bool) -> None:
         """Debug-only (#13): when True, the publish tick emits the commanded
@@ -440,6 +446,7 @@ class ReactiveSafetyLayer:
                 twist.linear.x = -min(abs(self.BACKUP_LINEAR_M_S), rev_cap)
                 twist.angular.z = self.BACKUP_ANGULAR_RAD_S * backup_dir
                 self._cmd_pub.publish(twist)
+                self._log_cmd_vel_change(twist.linear.x, twist.angular.z, "bumper")
                 return
             with self._lock:
                 self._backup_until_sim_s = None
@@ -512,9 +519,25 @@ class ReactiveSafetyLayer:
         twist.linear.x = lin
         twist.angular.z = ang
         self._cmd_pub.publish(twist)
+        src = ("veto" if veto_active
+               else self._last_cmd_src if self._last_cmd_src else "")
+        self._log_cmd_vel_change(lin, ang, src)
 
     def _sim_now(self) -> float:
         return self.node.get_clock().now().nanoseconds / 1e9
+
+    def _log_cmd_vel_change(self, lin: float, ang: float, src: str) -> None:
+        """Log when the published (lin, ang) transitions to a new value."""
+        rounded_lin = round(lin, 3)
+        rounded_ang = round(ang, 3)
+        if (self._last_pub_lin is None
+                or rounded_lin != self._last_pub_lin
+                or rounded_ang != self._last_pub_ang):
+            src_tag = f" [{src}]" if src else ""
+            logger.info("CMD_VEL: lin=%+.2f ang=%+.2f%s",
+                        rounded_lin, rounded_ang, src_tag)
+        self._last_pub_lin = rounded_lin
+        self._last_pub_ang = rounded_ang
 
     @staticmethod
     def _normalize(a: float) -> float:
