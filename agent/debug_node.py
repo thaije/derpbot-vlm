@@ -8,7 +8,7 @@ detection; qwen3-vl/gemini reach the target but detect nothing — this lets you
 see *why*, frame by frame.
 
 Reuses ``AgentNode`` wholesale (ROS subscriptions, safety layer, VLM client,
-verifier, bbox crop + depth projection helpers, the production decision prompt)
+verifier, location-bearing depth projection, the production decision prompt)
 so what runs here is byte-identical to the live agent. Only the run loop differs:
 the planner does NOT drive — you do.
 

@@ -143,10 +143,10 @@ class ReactiveSafetyLayer:
         # only the #13 debug harness's --no-safety flag flips it so the user can
         # feel raw control. Still publishes via THIS timer (no /cmd_vel race).
         self._passthrough = False
-        # Geometry veto enabled: when True, LiDAR-based linear caps and rotation
+        # Geometry veto: when True, LiDAR-based linear caps and rotation
         # vetoes are applied. When False, only bumper back-off active — the VLM
         # sees clearance in the prompt and chooses its own distances.
-        self._geometry_veto = False
+        # Set from config; see self._geometry_veto = geometry_veto_cfg above.
         # Change-detection for cmd_vel logging (last published values).
         self._last_pub_lin: Optional[float] = None
         self._last_pub_ang: Optional[float] = None

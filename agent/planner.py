@@ -80,7 +80,7 @@ class Planner:
 
     def accept_decision(self, decision, current_yaw: float, x: float, y: float, sim_now: float,
                         heading_offset_rad: float | None = None) -> Commitment:
-        # When a precise bearing to the target is known (from the bbox centre),
+        # When a precise bearing to the target is known (from the location bearing),
         # use it instead of the quantised left/center/right heading — the ±30°
         # buckets can't centre a target well enough to reach <1 m or keep it
         # framed for the verifier. Falls back to the bucket when None.
@@ -103,8 +103,8 @@ class Planner:
             target_visible=bool(decision.target_visible),
             heading=str(decision.heading),
         )
-        logger.info("PLANNER: commit hdg=%s dist=%.2fm yaw_tgt=%.2frad approach=%s",
-                    decision.heading, dist, yaw_target, is_approach)
+        logger.info("PLANNER: commit hdg=%s dist=%.2fm yaw_tgt=%.2frad approach=%s deadline=%.1fs",
+                    decision.heading, dist, yaw_target, is_approach, sim_now + timeout)
         return self._commitment
 
     def compute_command(self, x: float, y: float, yaw: float, sim_now: float) -> tuple[float, float]:
@@ -138,8 +138,8 @@ class Planner:
     def _complete(self, reason: str) -> None:
         c = self._commitment
         if c is not None:
-            logger.info("PLANNER: commitment ended (%s) heading=%s dist_target=%.2fm",
-                        reason, c.heading, c.distance_target_m)
+            logger.info("PLANNER: commitment ended (%s) heading=%s dist_target=%.2fm deadline=%.1fs",
+                        reason, c.heading, c.distance_target_m, c.deadline_sim_s)
         self._last_completion_reason = reason
         self._commitment = None
 

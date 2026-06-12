@@ -29,7 +29,7 @@ COMMIT_REPLAN_FRACTION = 0.25
 # forward camera (90° HFOV) rarely centres the target, so the detector never
 # flags it. A periodic step-stop-shoot rotation sweep makes the camera look in
 # every direction, one stationary frame at a time. Stationary is REQUIRED: depth
-# back-projection localises the bbox using the latest depth + odom, so the robot
+# back-projection localises the target using the latest depth + odom, so the robot
 # must not be turning between capture and projection or the position is wrong.
 SCAN_STEPS = 6                          # 6 × 60° tiles the circle (90° HFOV → 30° overlap)
 SCAN_STEP_RAD = 2.0 * math.pi / SCAN_STEPS
@@ -160,14 +160,20 @@ class AgentNode:
             self._frame_seq = 0
 
         # Active-scan state machine (see SCAN_* constants).
+        # Uses cumulative yaw tracking (like robot_control.py cmd_rotate):
+        # each tick accumulates the yaw delta from odom, so wrap-around is
+        # handled correctly and the robot never overshoots. The robot stops,
+        # settles, then shoots — never rotates while a VLM query is in flight.
         self._scan_active = False
-        self._scan_phase = "rotate"          # rotate → settle → query
+        self._scan_phase = "settle"          # settle → query → rotate → settle → …
         self._scan_shots = 0
-        self._scan_accum = 0.0               # |yaw| rotated since the last shot
-        self._scan_last_yaw = 0.0
         self._scan_dir = 1.0
         self._scan_settle_until = 0.0
         self._scan_rotate_deadline = 0.0
+        self._scan_prev_yaw = 0.0            # yaw at last tick (for cumulative tracking)
+        self._scan_cumulative_rad = 0.0      # total yaw rotated since step start
+        self._scan_target_rad = 0.0          # how far to rotate this step (radians)
+        self._scan_was_blocked = False       # True when bumper back-off is active
         self._last_scan_end_sim = -1e9
         self._last_confirmed_sim = -1e9
 
@@ -365,14 +371,17 @@ class AgentNode:
                     target_type, track, tgt_x, tgt_y, log_extra)
 
     def _heading_from_location(self, location: str | None) -> float | None:
-        """Bearing (rad, +ve = left/CCW) from the camera axis for a VLM location
-        string, so the planner can steer straight at the target instead of the
-        coarse ±30° buckets. None if unavailable."""
+        """Heading offset (rad, +ve = left/CCW) from the camera axis for a VLM
+        location string. The depth-projection bearing convention is negative=left
+        (camera x=right), but the planner uses positive=left (yaw CCW), so we
+        negate the bearing. None if unavailable."""
         from agent.depth_projection import location_to_bearing
         if location is None:
             return None
         bearing = location_to_bearing(location)
-        return bearing
+        if bearing is None:
+            return None
+        return -bearing
 
     @staticmethod
     def _norm_angle(a: float) -> float:
@@ -381,6 +390,10 @@ class AgentNode:
         while a < -math.pi:
             a += 2.0 * math.pi
         return a
+
+    def _sim_now(self) -> float:
+        """Return current sim time in seconds."""
+        return self.node.get_clock().now().nanoseconds / 1e9
 
     def _debug_pause(self) -> None:
         if self._debug_pause_s > 0:
@@ -427,21 +440,24 @@ class AgentNode:
         return proj, True
 
     # ── Active scan (step-stop-shoot rotation sweep) ────────────────────────
-    # Rotation cooperates with the safety layer instead of fighting it: the
-    # directional rotation veto can block the commanded turn direction near a
-    # wall (the deadlock-recovery then rotates the robot toward open space,
-    # possibly the *other* way). So progress is measured as ACTUAL yaw rotated
-    # in any direction (`_scan_accum`), not by reaching an absolute heading.
-    # The robot stops, settles and shoots every SCAN_STEP_RAD of accumulated
-    # rotation — stationary while capturing so depth projection stays valid.
+    # Uses absolute yaw targeting to be robust against VLM blocking gaps.
+    # Each step: stop the robot → measure yaw → compute next target yaw →
+    # rotate until the target is reached → stop → settle → shoot.
+    # The robot never rotates while a VLM query is in flight.
+    @staticmethod
+    def _angle_diff(a: float, b: float) -> float:
+        """Shortest signed angular difference a - b, result in (-pi, pi]."""
+        return math.atan2(math.sin(a - b), math.cos(a - b))
+
     def _start_scan(self, sim_now: float) -> None:
         _, _, yaw = self._get_odom()
         self._scan_active = True
         self._scan_phase = "settle"          # shoot the current heading first
         self._scan_shots = 0
-        self._scan_accum = 0.0
-        self._scan_last_yaw = yaw
         self._scan_dir = 1.0
+        self._scan_prev_yaw = yaw
+        self._scan_cumulative_rad = 0.0
+        self._scan_target_rad = 0.0          # first shot: no rotation needed
         self._scan_settle_until = sim_now + SCAN_SETTLE_S
         self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
         self.safety.command(0.0, 0.0, src="scan-stop")
@@ -454,15 +470,18 @@ class AgentNode:
         self.safety.command(0.0, 0.0, src="scan-stop")
         logger.info("SCAN: end (%s)", reason)
 
-    def _scan_after_shot(self, sim_now: float) -> None:
+    def _scan_prepare_next_step(self, sim_now: float) -> None:
+        """After a shot, prepare to rotate by SCAN_STEP_RAD for the next shot."""
         self._scan_shots += 1
         if self._scan_shots >= SCAN_STEPS:
             self._end_scan(sim_now, reason="swept full circle")
-        else:
-            self._scan_phase = "rotate"
-            self._scan_accum = 0.0
-            _, _, self._scan_last_yaw = self._get_odom()
-            self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
+            return
+        _, _, current_yaw = self._get_odom()
+        self._scan_prev_yaw = current_yaw
+        self._scan_cumulative_rad = 0.0
+        self._scan_target_rad = self._scan_dir * SCAN_STEP_RAD
+        self._scan_phase = "rotate"
+        self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
 
     def _scan_tick(self, sim_now: float) -> None:
         """One iteration of the scan state machine. Owns the safety command and
@@ -471,32 +490,46 @@ class AgentNode:
         self.memory.mark(x, y)
 
         # A bumper back-off owns motion; pause scan timing until it clears.
+        # Re-anchor cumulative tracker on resume so back-off yaw change isn't
+        # counted toward the rotation target.
         if self.safety.is_blocked():
+            if not self._scan_was_blocked:
+                self._scan_was_blocked = True
             self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
-            self._scan_last_yaw = yaw
             return
+        if self._scan_was_blocked:
+            _, _, yaw = self._get_odom()
+            self._scan_prev_yaw = yaw
+            self._scan_was_blocked = False
 
         if self._scan_phase == "rotate":
-            delta = abs(self._norm_angle(yaw - self._scan_last_yaw))
-            self._scan_accum += delta
-            self._scan_last_yaw = yaw
-            if self._scan_accum >= SCAN_STEP_RAD:
-                logger.info("SCAN: step rotated %.1f° (target %.0f°), settling",
-                            math.degrees(self._scan_accum),
-                            math.degrees(SCAN_STEP_RAD))
+            # Closed-loop rotation using cumulative yaw tracking.
+            # Accumulate odom deltas to avoid wrap-around issues; ramp down
+            # proportionally as we approach the target (like cmd_rotate).
+            x, y, yaw = self._get_odom()
+            delta = self._angle_diff(yaw, self._scan_prev_yaw)
+            self._scan_prev_yaw = yaw
+            self._scan_cumulative_rad += delta
+            remaining = self._scan_target_rad - self._scan_cumulative_rad
+            if abs(remaining) < math.radians(1.5):
+                logger.info("SCAN: step rotated %.0f°/%.0f°, settling",
+                            math.degrees(self._scan_cumulative_rad),
+                            math.degrees(self._scan_target_rad))
                 self.safety.command(0.0, 0.0, src="scan-settle")
                 self._scan_phase = "settle"
                 self._scan_settle_until = sim_now + SCAN_SETTLE_S
             elif sim_now >= self._scan_rotate_deadline:
-                # Rotation wedged (walls all round, safety can't turn us): shoot
-                # the current heading anyway, then move on.
-                logger.info("SCAN: rotate timeout (accum %.0f°) — shooting current heading",
-                            math.degrees(self._scan_accum))
+                logger.info("SCAN: rotate timeout (rotated %.0f°/%.0f°) — settling anyway",
+                            math.degrees(self._scan_cumulative_rad),
+                            math.degrees(self._scan_target_rad))
                 self.safety.command(0.0, 0.0, src="scan-settle")
                 self._scan_phase = "settle"
                 self._scan_settle_until = sim_now + SCAN_SETTLE_S
             else:
-                self.safety.command(0.0, self._scan_dir * SCAN_ANG_SPEED, src="scan-rotate")
+                # Proportional control with deceleration ramp
+                SCAN_ROTATE_KP = 2.0
+                ang_speed = max(-SCAN_ANG_SPEED, min(SCAN_ANG_SPEED, remaining * SCAN_ROTATE_KP))
+                self.safety.command(0.0, ang_speed, src="scan-rotate")
             return
 
         if self._scan_phase == "settle":
@@ -529,6 +562,9 @@ class AgentNode:
                             self._scan_shots + 1, SCAN_STEPS,
                             result.target_visible, result.reason[:80])
                 proj, publish_ok = self._evaluate_candidate(result, sim_now)
+                # Refresh sim_now and pose after blocking VLM calls
+                sim_now = self._sim_now()
+                x, y, yaw = self._get_odom()
                 if result.target_visible:
                     offset = self._heading_from_location(result.target_location)
                     if publish_ok:
@@ -540,7 +576,9 @@ class AgentNode:
                     self._end_scan(sim_now, reason="approaching sighting")
                     self._debug_pause()
                     return
-            self._scan_after_shot(sim_now)
+            # Refresh sim_now after blocking VLM call
+            sim_now = self._sim_now()
+            self._scan_prepare_next_step(sim_now)
             return
 
     def _check_mission_status(self) -> bool:
@@ -628,6 +666,8 @@ class AgentNode:
                     if result is not None:
                         x, y, yaw = self._get_odom()
                         proj, publish_ok = self._evaluate_candidate(result, sim_now)
+                        # Refresh sim_now after blocking VLM calls in evaluate
+                        sim_now = self._sim_now()
                         offset = None
                         if result.target_visible:
                             self._last_scan_end_sim = sim_now
@@ -708,7 +748,7 @@ def main(args=None):
     parser = argparse.ArgumentParser(description="DerpBot VLM Agent")
     parser.add_argument("--config", default="config/vlm_config.yaml", help="Path to config file")
     parser.add_argument("--save-frames", default=None, metavar="DIR",
-                        help="Save annotated frames with VLM bboxes to DIR "
+                        help="Save annotated frames with VLM location text to DIR "
                              "(default: off; use '.' for cwd)")
     cli_args = parser.parse_args()
 
