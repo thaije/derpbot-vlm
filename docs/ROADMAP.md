@@ -16,18 +16,21 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Raise detection reliability (simplified pipeline, re-benchmark pending) · open
-**#14 simplified the detect→verify→act pipeline:** removed bbox, replaced with
-location text + full-image verifier + column-based depth projection + VLM-owns-distance +
-bumper-only safety. The old bottlenecks (bbox inaccuracy, depth-override micro-commitments,
-edge-touch FP gating, safety-geometry oscillation) are removed. Awaiting re-benchmark.
-Next: sweep 5 seeds, compare with pre-#14 baseline.
+### 1. Validate simplified pipeline · [#14](https://github.com/thaije/derpbot-vlm/issues/14)
+Implementation done (location text + full-image verifier + column depth projection +
+VLM-owns-distance + bumper-only safety; bbox/depth-override/edge-guard/geometry-veto removed).
+Scan-rotation control loop fixed (#15). Re-benchmark in progress: sweep 5 seeds vs pre-#14
+baseline. Known gap from #15 spot-checks: detection misses on flat/floor targets
+(seed 2 pipe_sewer_floor: 0 detections) and false positives (seed 1: fp=4) — quantify and feed item 2.
 
-### 3. ~~Fix agent hangs idle — zero VLM output~~ · [#17](https://github.com/thaije/derpbot-vlm/issues/17) ✓
-Fixed: HTTP timeout propagated to ollama client; scan state machine handles failed VLM submissions.
+### 2. Raise detection reliability · open
+Detector misses low-contrast / flat / floor targets and emits false positives. Gated on the
+#14 benchmark to identify the dominant failure mode (miss vs FP, which classes). Then iterate
+on prompt / verifier / projection. Spin out a dedicated issue once the benchmark lands.
 
-### 4. Benchmark suite on more seeds · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Done for 5 seeds with the #12 safety stack (gemma4 1/5 success). Target success=true ≥ 3/5 unmet — gated by item 1 (detection frequency). Re-run after a detection improvement lands.
+### 3. Benchmark suite on more seeds · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
+Target success=true ≥ 3/5 seeds. Last full sweep (1/5) predates the #14 + #15 fixes. Folded
+into the item 1 re-benchmark; #3 closes when ≥ 3/5 holds.
 
 ---
 
