@@ -97,25 +97,30 @@ class AgentNode:
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
         )
+        qos_reliable = QoSProfile(
+            depth=5,
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+        )
 
         self.node.create_subscription(
             RosImage, ros_cfg["camera_topic"], self._image_callback, qos_be)
         self.node.create_subscription(
-            Odometry, ros_cfg["odom_topic"], self._odom_callback, qos_be)
+            Odometry, ros_cfg["odom_topic"], self._odom_callback, qos_reliable)
 
         self._depth_image = None
         self._depth_lock = Lock()
         depth_topic = ros_cfg.get("depth_topic")
         if depth_topic:
             self.node.create_subscription(
-                RosImage, depth_topic, self._depth_callback, qos_be)
+                RosImage, depth_topic, self._depth_callback, qos_reliable)
 
         self._camera_K = None
         self._camera_K_lock = Lock()
         cam_info_topic = ros_cfg.get("camera_info_topic", "/derpbot_0/rgbd/camera_info")
         from sensor_msgs.msg import CameraInfo
         self.node.create_subscription(
-            CameraInfo, cam_info_topic, self._camera_info_callback, qos_be)
+            CameraInfo, cam_info_topic, self._camera_info_callback, qos_reliable)
 
         from agent.safety_layer import ReactiveSafetyLayer
         self.safety = ReactiveSafetyLayer(self.node, config)

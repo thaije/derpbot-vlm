@@ -115,6 +115,7 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **`use_sim_time=True` required.** rclpy node must use sim time or messages are silently dropped as future-dated.
 - **Only one sim run at a time.** Hardware cannot sustain two Gazebo/ROS 2 stacks simultaneously.
 - **Sim speed affects VLM frequency.** At 3x speed, 300s sim = 100s wall time, only ~15 VLM queries.
+- **QoS must match publisher reliability.** EKF odom, depth, camera_info publish RELIABLE; subscribing BEST_EFFORT silently receives nothing in FastDDS (#15). Use RELIABLE for non-image topics; image can stay BEST_EFFORT.
 
 ### VLM / Ollama
 - **Default cloud model: `gemma4:31b-cloud`**
