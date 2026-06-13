@@ -7,16 +7,31 @@ Load this every session. What's next lives in [`ROADMAP.md`](ROADMAP.md); histor
 
 ## Current performance
 
-**Default model `gemma4:31b-cloud`, speed 1.** The #14 simplification removes
-bbox, depth-override, edge-guard, trust-range gating, and geometry veto in
-favour of location text + full-image verifier + VLM-owns-distance +
-bumper-only safety. Awaiting re-benchmark.
+**Default model `gemma4:31b-cloud`, speed 1.** The #14 simplification (location
+text + full-image verifier + VLM-owns-distance + bumper-only safety; bbox /
+depth-override / edge-guard / trust-range / geometry-veto removed) plus the #15
+executor fix gives **3/5 success on `basement_find/easy`** (2026-06-13 sweep),
+up from 1/5 pre-#14. Target ≥ 3/5 **met**.
+
+| seed | target | success | t→success | tp | fp | col | score |
+|---|---|---|---|---|---|---|---|
+| 1 | fire_extinguisher | ✅ | 119 s | 1 | 4 | 0 | 81.2 |
+| 2 | pipe_sewer_floor | ❌ | — | 0 | 0 | 0 | 20.0 |
+| 3 | drill | ✅ | 65 s | 1 | 1 | 0 | 89.9 |
+| 4 | drink_can_on_box | ❌ | — | 0 | 2 | 0 | 20.0 |
+| 5 | fire_extinguisher | ✅ | 191 s | 1 | 3 | 2 | 58.5 |
+
+Two open weaknesses (→ detection-reliability work): (a) **misses on flat/small
+targets** — seed 2 pipe 0/31 vis flags (blind), seed 4 can flagged 11× but only
+mislocalised FPs confirmed; (b) **FP scatter** — same object projects to drifting
+map positions as the robot moves (tall depth-column median tracks the wall behind
+a cornered object, not the object), spawning extra track ids (10 FPs across the run).
 
 **Seed → target** (deterministic, `rng(seed+5555).choice(pool)`): 1=fire_extinguisher,
 2=pipe_sewer_floor, 3=drill, 4=drink_can_on_box, 5=fire_extinguisher.
 
 **Target:** Complete `basement_find/easy` with success=true on ≥ 3/5 seeds
-(proximity ≤ 1 m + valid detection). Re-sweep after #14 changes before trusting any delta.
+(proximity ≤ 1 m + valid detection) — **met 3/5**.
 
 ### Evaluation metrics (priority order — use for model comparison)
 

@@ -16,21 +16,12 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Validate simplified pipeline · [#14](https://github.com/thaije/derpbot-vlm/issues/14)
-Implementation done (location text + full-image verifier + column depth projection +
-VLM-owns-distance + bumper-only safety; bbox/depth-override/edge-guard/geometry-veto removed).
-Scan-rotation control loop fixed (#15). Re-benchmark in progress: sweep 5 seeds vs pre-#14
-baseline. Known gap from #15 spot-checks: detection misses on flat/floor targets
-(seed 2 pipe_sewer_floor: 0 detections) and false positives (seed 1: fp=4) — quantify and feed item 2.
-
-### 2. Raise detection reliability · open
-Detector misses low-contrast / flat / floor targets and emits false positives. Gated on the
-#14 benchmark to identify the dominant failure mode (miss vs FP, which classes). Then iterate
-on prompt / verifier / projection. Spin out a dedicated issue once the benchmark lands.
-
-### 3. Benchmark suite on more seeds · [#3](https://github.com/thaije/derpbot-vlm/issues/3)
-Target success=true ≥ 3/5 seeds. Last full sweep (1/5) predates the #14 + #15 fixes. Folded
-into the item 1 re-benchmark; #3 closes when ≥ 3/5 holds.
+### 1. Detection reliability · [#18](https://github.com/thaije/derpbot-vlm/issues/18)
+Top priority — the only remaining failure mode after #14 (3/5) and #15. Two parts:
+(a) **misses on flat/small targets** (seed 2 pipe 0/31 flags; seed 4 can only mislocalised FPs);
+(b) **FP scatter** — tall depth-column median tracks the wall behind a cornered object, so the
+same target projects to drifting map positions → extra track ids (10 FPs across the sweep).
+Done when ≥ 4/5 success and ≤ 1 FP/seed. Starting hypotheses in the issue.
 
 ---
 
