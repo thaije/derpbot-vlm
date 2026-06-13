@@ -116,6 +116,8 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Only one sim run at a time.** Hardware cannot sustain two Gazebo/ROS 2 stacks simultaneously.
 - **Sim speed affects VLM frequency.** At 3x speed, 300s sim = 100s wall time, only ~15 VLM queries.
 - **QoS must match publisher reliability.** EKF odom, depth, camera_info publish RELIABLE; subscribing BEST_EFFORT silently receives nothing in FastDDS (#15). Use RELIABLE for non-image topics; image can stay BEST_EFFORT.
+- **Use `SingleThreadedExecutor`, NOT `MultiThreadedExecutor` (#15).** The MTE busy-spins in `_wait_for_ready_callbacks` (entities perpetually "ready but not executable" across worker threads) → pins a core at 100%, starves the GIL, freezes the main control loop 10-20s; robot coasts on last cmd_vel (scan "spins 180°/step"). STE blocks properly between callbacks. Keep ROS callbacks cheap so one thread keeps up.
+- **Image/depth callbacks store the raw msg only; convert lazily on demand (#15).** cv_bridge+PIL on every frame (~30 Hz) needlessly loads the executor; conversion is only needed ~once per VLM cycle. `_get_latest_image()` / `_project_target_from_location()` do the conversion.
 
 ### VLM / Ollama
 - **Default cloud model: `gemma4:31b-cloud`**

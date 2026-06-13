@@ -84,7 +84,7 @@ class AgentNode:
         self.node.get_logger().info("Agent node started with use_sim_time=True")
 
         self.bridge = CvBridge()
-        self._latest_image = None
+        self._latest_image_msg = None
         self._image_lock = Lock()
         self._odom_x = 0.0
         self._odom_y = 0.0
@@ -108,7 +108,7 @@ class AgentNode:
         self.node.create_subscription(
             Odometry, ros_cfg["odom_topic"], self._odom_callback, qos_reliable)
 
-        self._depth_image = None
+        self._depth_msg = None
         self._depth_lock = Lock()
         depth_topic = ros_cfg.get("depth_topic")
         if depth_topic:
@@ -188,25 +188,18 @@ class AgentNode:
         return Parameter("use_sim_time", value=True)
 
     def _image_callback(self, msg):
-        try:
-            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
-            pil_image = Image.fromarray(frame)
-            with self._image_lock:
-                self._latest_image = pil_image
-                self._latest_image_width = pil_image.size[0]
-                self._latest_image_height = pil_image.size[1]
-        except Exception as e:
-            logger.debug("Image callback error: %s", e)
+        # Store the raw ROS msg only (microseconds). The cv_bridge + PIL
+        # conversion is deferred to _get_latest_image(), called ~once per VLM
+        # cycle, instead of running on every frame (~30 Hz). Eager per-frame
+        # conversion needlessly burned the executor (#15).
+        with self._image_lock:
+            self._latest_image_msg = msg
 
     def _depth_callback(self, msg):
-        try:
-            depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-            with self._depth_lock:
-                self._depth_image = depth
-                self._depth_width = depth.shape[1]
-                self._depth_height = depth.shape[0]
-        except Exception as e:
-            logger.debug("Depth callback error: %s", e)
+        # Store the raw msg only; convert lazily in _project_target_from_location
+        # (rare — only when a detection is being localised). See _image_callback.
+        with self._depth_lock:
+            self._depth_msg = msg
 
     def _camera_info_callback(self, msg):
         with self._camera_K_lock:
@@ -226,7 +219,15 @@ class AgentNode:
 
     def _get_latest_image(self):
         with self._image_lock:
-            return self._latest_image
+            msg = self._latest_image_msg
+        if msg is None:
+            return None
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+            return Image.fromarray(frame)
+        except Exception as e:
+            logger.debug("Image conversion error: %s", e)
+            return None
 
     def _get_odom(self):
         with self._odom_lock:
@@ -324,10 +325,15 @@ class AgentNode:
         if bearing is None:
             return None
         with self._depth_lock:
-            depth = self._depth_image
+            depth_msg = self._depth_msg
         with self._camera_K_lock:
             K = self._camera_K
-        if depth is None or K is None:
+        if depth_msg is None or K is None:
+            return None
+        try:
+            depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+        except Exception as e:
+            logger.debug("Depth conversion error: %s", e)
             return None
         odom_x, odom_y, odom_yaw = self._get_odom()
         return back_project_from_location(location, depth, K, odom_x, odom_y, odom_yaw)
@@ -445,9 +451,13 @@ class AgentNode:
         return proj, True
 
     # ── Active scan (step-stop-shoot rotation sweep) ────────────────────────
-    # Uses absolute yaw targeting to be robust against VLM blocking gaps.
-    # Each step: stop the robot → measure yaw → compute next target yaw →
-    # rotate until the target is reached → stop → settle → shoot.
+    # Each step: stop → settle → shoot → rotate SCAN_STEP_RAD → repeat.
+    # Rotation uses the SAME closed-loop cumulative-yaw tracker as
+    # robot_control.py cmd_rotate (accumulate odom deltas, proportional ramp,
+    # 1.5° stop threshold) — accurate to ~1° PROVIDED odom is fresh. Odom
+    # freshness depends on the SingleThreadedExecutor fix (#15, see _spin);
+    # before it the executor busy-spin starved odom and the tracker read a
+    # stale yaw, measuring 0° while the robot spun freely.
     # The robot never rotates while a VLM query is in flight.
     @staticmethod
     def _angle_diff(a: float, b: float) -> float:
@@ -740,8 +750,18 @@ class AgentNode:
 
     def _spin(self):
         import rclpy
-        from rclpy.executors import MultiThreadedExecutor
-        executor = MultiThreadedExecutor(num_threads=2)
+        from rclpy.executors import SingleThreadedExecutor
+        # SingleThreadedExecutor, NOT MultiThreadedExecutor (#15). The MTE
+        # busy-spins in _wait_for_ready_callbacks: with several high-rate
+        # subscriptions, entities are perpetually "ready but not executable"
+        # (their callback group is busy on another worker), so wait_set.wait()
+        # returns immediately in a tight loop, pinning a core at ~100% and
+        # starving the GIL. That froze the main control loop for 10-20 s at a
+        # time, during which the robot coasted on its last cmd_vel — the scan
+        # "spins 180° per step" symptom. The STE blocks properly between
+        # callbacks (no cross-thread group contention); callbacks are cheap now
+        # that image/depth convert lazily, so one thread keeps up easily.
+        executor = SingleThreadedExecutor()
         executor.add_node(self.node)
         try:
             executor.spin()
