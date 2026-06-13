@@ -54,7 +54,7 @@ done
 
 echo "Starting VLM agent..."
 tmux split-window -t derpbot
-tmux send-keys -t derpbot "cd $REPO_ROOT && source .venv/bin/activate && python3.12 agent/agent_node.py" Enter
+tmux send-keys -t derpbot "cd $REPO_ROOT && source .venv/bin/activate && PYTHONPATH='/opt/ros/jazzy/lib/python3.12/site-packages:$PYTHONPATH' python3.12 -m agent.agent_node" Enter
 
 echo "Waiting for agent to signal ready..."
 for i in $(seq 1 120); do

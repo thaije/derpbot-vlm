@@ -6,7 +6,9 @@
       "Read(*)",
       "Write(*)",
       "Glob(*)",
-      "Grep(*)"
+      "Grep(*)",
+      "WebSearch",
+      "WebFetch(domain:ollama.com)"
     ]
   }
 }

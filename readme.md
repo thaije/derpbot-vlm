@@ -2,25 +2,26 @@
 
 VLM-steered robot agent for the [Autonomous Robotics Simulation Testbed (ARST)](https://github.com/thaije/robot-sandbox). Uses a vision-language model to interpret the camera feed and produce velocity commands. No Nav2, no SLAM, no frontier explorer — the intelligence lives in the model.
 
-Architecture: Camera → VLM → action → cmd_vel. LiDAR safety layer overrides on collision risk.
+Architecture: Camera+LiDAR → VLM → planner → cmd_vel. ReactiveSafetyLayer (bumper back-off) owns cmd_vel.
 
 State: [`docs/STATE.md`](docs/STATE.md) · Roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md) · Tracker: GitHub issues
 
 ## Architecture
 
 ```
-Camera (10 Hz) → [rate limiter 1 Hz] → VLM subprocess
-                                           ↓
-                                 action + reasoning text
-                                           ↓
-                              action executor → /cmd_vel
-                                           ↑
-LiDAR → safety layer (stop if obstacle < 0.3 m, overrides cmd_vel)
+Camera + LiDAR(front) + VisitedCells(memory) → VLM (cloud)
+                                                     ↓
+  NavigationDecision: {target_visible, target_location, heading, drive_distance_m, reason}
+                                                     ↓
+  Planner: commitment lifecycle (rotate → drive → replan)
+                                                     ↓
+  ReactiveSafetyLayer (20 Hz, owns /cmd_vel): bumper back-off only; passthrough if --no-safety
 ```
 
-Each VLM tick: system prompt = mission brief, user prompt = camera image + last 3 actions.
-Output: `{"action": "forward|backward|left|right|stop", "reasoning": "...", "target_visible": bool}`.
-Each action runs for 1 s, then VLM is re-queried.
+Each VLM tick: system prompt = mission brief + LiDAR clearance + memory rays; user prompt = camera image.
+Output: `{target_visible, target_location, heading, drive_distance_m, reason}`.
+On `target_visible=true` + location: skeptical verifier call on full image before publishing detection.
+Active scan: step-stop-shoot rotation sweep when no detection for 30 s.
 
 ## Prerequisites
 
@@ -37,6 +38,9 @@ sudo apt install ros-jazzy-ros-gz* ros-jazzy-tf2-ros
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
+
+# Required: ROS 2 Python packages on sys.path
+export PYTHONPATH="/opt/ros/jazzy/lib/python3.12/site-packages:$PYTHONPATH"
 ```
 
 ## Run
@@ -46,7 +50,7 @@ uv pip install -r requirements.txt
 ./scripts/start_stack.sh config/scenarios/basement_find/easy.yaml --seed 42 --headless
 
 # Or agent only (requires running sim)
-python3.12 agent/agent_node.py
+PYTHONPATH="/opt/ros/jazzy/lib/python3.12/site-packages:$PYTHONPATH" python3.12 -m agent.agent_node
 ```
 
 ## Debug harness
@@ -97,14 +101,14 @@ python3.12 -m agent.agent_node --config config/vlm_config_cloud.yaml --save-fram
 ## Configuration
 
 All tunable parameters live in [`config/vlm_config.yaml`](config/vlm_config.yaml):
-- Model selection (SmolVLM / Phi-3-Vision)
-- Inference rate, max retries
-- Action → velocity mappings
+- Model selection (default: `gemma4:31b-cloud`)
+- Inference rate, max retries, VLM interval
+- Planner speeds and commitment timeouts
 - Safety layer thresholds
 
 ## Safety layer
 
-The safety layer runs independently of the VLM loop. If the forward LiDAR arc (±30°) detects an obstacle closer than 0.3 m, it publishes zero velocity on `/derpbot_0/cmd_vel`, overriding any VLM command. The VLM is never involved in safety decisions.
+The safety layer runs at 20 Hz and owns `/cmd_vel`. On bumper contact it backs off (1.5 s capped reverse + unconditional turn). Geometry veto is disabled by default — the VLM sees LiDAR clearance in the prompt and picks its own distances. Use `--no-safety` for passthrough mode (debug only).
 
 ## Tests
 
