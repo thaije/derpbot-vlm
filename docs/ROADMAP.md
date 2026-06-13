@@ -23,12 +23,6 @@ bumper-only safety. The old bottlenecks (bbox inaccuracy, depth-override micro-c
 edge-touch FP gating, safety-geometry oscillation) are removed. Awaiting re-benchmark.
 Next: sweep 5 seeds, compare with pre-#14 baseline.
 
-### 2. Fix scan rotation overshoot · [#15](https://github.com/thaije/derpbot-vlm/issues/15)
-Robot rotates ~180° per scan step instead of 60° because `_scan_accum` stays at 0°
-— the main loop blocks on cloud VLM while the robot keeps spinning uncontrolled.
-With geometry veto disabled, rotation is unfiltered. Needs: stop the robot between
-scan steps, robust accum tracking, or yaw-target-based rotation.
-
 ### 3. ~~Fix agent hangs idle — zero VLM output~~ · [#17](https://github.com/thaije/derpbot-vlm/issues/17) ✓
 Fixed: HTTP timeout propagated to ollama client; scan state machine handles failed VLM submissions.
 
