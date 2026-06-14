@@ -135,6 +135,7 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Image/depth callbacks store the raw msg only; convert lazily on demand (#15).** cv_bridge+PIL on every frame (~30 Hz) needlessly loads the executor; conversion is only needed ~once per VLM cycle. `_get_latest_image()` / `_project_target_from_location()` do the conversion.
 
 ### VLM / Ollama
+- **Prompts + schema + inference params live in `shared/`** (`prompts/*.txt`, `vlm_schema.json`), loaded by `vlm_client.py` AND bundled as Android assets (#19). ONE source of truth — edit there, never re-inline. Loaded verbatim (byte-identical).
 - **Default cloud model: `gemma4:31b-cloud`**
 - **`target_location` replaces `target_bbox`.** The VLM emits a semantic position string (left/center/right etc.) instead of pixel coordinates. This is mapped to a bearing fraction for depth-projection and planner heading.
 - **Location bearings** are in `depth_projection.py`: far left=-0.75, left=-0.42, center-left=-0.21, center=0, center-right=0.21, right=0.42, far right=0.75 rad (positive=left/CCW).

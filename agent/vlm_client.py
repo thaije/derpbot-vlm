@@ -4,55 +4,45 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_DIM = 768
-JPEG_QUALITY = 90
+# The VLM "brain" (prompts + decision schema + inference params) lives in
+# shared/ so the Python sim agent and the Android robot app (issue #19) read ONE
+# source of truth and never drift. Edit prompts in shared/prompts/*.txt and
+# enums/params in shared/vlm_schema.json — do NOT inline them back here.
+_SHARED_DIR = Path(__file__).resolve().parent.parent / "shared"
 
-SYSTEM_PROMPT = (
-    "You are steering a robot through an indoor environment using a camera view."
-    "\nFor every image, you must decide TWO things in one JSON response:"
-    "\n  1. DETECT — is the target object visible?"
-    "\n     Scan the WHOLE image carefully — including the floor, corners, edges,"
-    "\n     along walls, and partly-occluded areas behind other objects."
-    "\n     Targets may appear SMALL (covering only a few percent of the image),"
-    "\n     LOW-CONTRAST (similar colour/material to the background), or PARTLY"
-    "\n     HIDDEN. The target name is a descriptive label, often underscored;"
-    "\n     accept any object that plausibly fits the description — synonyms,"
-    "\n     variants, partial views and side-on views all count."
-    "\n     Set target_visible=true if you see ANY object that could match."
-    "\n     If true, you MUST also fill target_location with the object's position"
-    "\n     in the image: one of \"far left\", \"left\", \"center-left\", \"center\","
-    "\n     \"center-right\", \"right\", \"far right\"."
-    "\n     NEVER report target_visible=true without a location."
-    "\n  2. NAVIGATE — pick the next heading and how far to drive there."
-    "\n     heading ∈ {\"left\" (~30° left), \"center\" (straight), \"right\" (~30° right)}."
-    "\n     drive_distance_m ∈ [0.0, 2.0]. 0.0 = stop and rescan."
-    "\nGuidelines:"
-    "\n  - When the target is visible, drive toward it. Pick the heading that points at it; pick a"
-    "\n    distance close to how far away it appears."
-    "\n  - When the target is NOT visible, pick a heading that leads into open, unexplored space."
-    "\n  - Avoid walls/obstacles. Use shorter distances (0.3-0.8 m) in cluttered or uncertain scenes;"
-    "\n    longer (1.0-2.0 m) when the path ahead is clearly open."
-    "\n  - If you are facing a wall and no good option, choose left or right with a small distance."
-    "\nReply with valid JSON ONLY, matching this schema:"
-    "\n{\"target_visible\": bool, \"target_location\": \"far left\"|\"left\"|\"center-left\"|\"center\"|\"center-right\"|\"right\"|\"far right\" or null,"
-    " \"heading\": \"left\"|\"center\"|\"right\", \"drive_distance_m\": float, \"reason\": str}"
-)
+with open(_SHARED_DIR / "vlm_schema.json", encoding="utf-8") as _f:
+    _SCHEMA = json.load(_f)
 
 
-_LOCATION_VALUES = ["far left", "left", "center-left", "center", "center-right", "right", "far right"]
+def _load_prompt(name: str) -> str:
+    """Load a shared prompt verbatim (no stripping → byte-identical to source)."""
+    return (_SHARED_DIR / "prompts" / name).read_text(encoding="utf-8")
+
+
+MAX_IMAGE_DIM = _SCHEMA["image"]["max_dim"]
+JPEG_QUALITY = _SCHEMA["image"]["jpeg_quality"]
+DETECTION_TEMPERATURE = _SCHEMA["inference"]["detection_temperature"]
+VERIFICATION_TEMPERATURE = _SCHEMA["inference"]["verification_temperature"]
+_DIST_MIN = _SCHEMA["navigation_decision"]["drive_distance_m"]["min"]
+_DIST_MAX = _SCHEMA["navigation_decision"]["drive_distance_m"]["max"]
+_LOCATION_VALUES = _SCHEMA["navigation_decision"]["location_values"]
+_HEADING_TOKENS = set(_SCHEMA["navigation_decision"]["heading_values"])
+
+SYSTEM_PROMPT = _load_prompt("detection_system.txt")
 
 
 class NavigationDecision(BaseModel):
     target_visible: bool
     target_location: Optional[str] = None
     heading: Literal["left", "center", "right"]
-    drive_distance_m: float = Field(ge=0.0, le=2.0)
+    drive_distance_m: float = Field(ge=_DIST_MIN, le=_DIST_MAX)
     reason: str
 
 
@@ -66,36 +56,7 @@ NAV_DECISION_SCHEMA = NavigationDecision.model_json_schema()
 # behaviour). The verifier is asked to enumerate evidence both for AND against
 # so the model commits to a calibrated judgement instead of agreeing reflexively.
 
-VERIFIER_SYSTEM_PROMPT = (
-    "You are a visual verifier for a robot exploring a simple 3D-rendered"
-    " indoor world. The robot's detector flagged that the target object may be"
-    " visible in this camera image, at a specific location. Confirm or reject"
-    " that claim."
-    "\nThe objects are LOW-DETAIL 3D models: a real-looking label, gauge, hose,"
-    " nozzle, text or fine surface detail is usually ABSENT. Do NOT require"
-    " such fine details — judge by the OVERALL FORM: is this a DISCRETE OBJECT"
-    " whose shape, proportions and colour match the target? A simplified red"
-    " vertical cylinder of roughly the right proportions IS a valid fire"
-    " extinguisher here; a low-poly box of the right shape IS a valid"
-    " suitcase/drill/etc."
-    "\nFocus your judgement on the indicated location in the image. Do still"
-    " REJECT genuine background and wrong shapes: a FLAT SURFACE or a"
-    " REPEATING TEXTURE (a brick wall, a floor or wall seam, a plain panel, a"
-    " doorway, a shadow) is NOT the target even when its colour matches —"
-    " these are scenery, not a discrete object. Also reject when the proportions"
-    " or shape are clearly wrong for the target."
-    "\nFor every image, you must:"
-    "\n  - List 1-3 features that MATCH the target (discrete-object shape,"
-    "\n    proportions, colour, placement)."
-    "\n  - List 1-3 features that DO NOT match (e.g. looks like a flat wall,"
-    "\n    wrong proportions, part of a repeating texture)."
-    "\n  - Decide confirmed=true when the indicated location shows a discrete"
-    " object of the right overall form, even if low-detail; confirmed=false"
-    " when it is a flat/background surface or the shape is clearly wrong."
-    "\nReply with valid JSON ONLY, matching this schema:"
-    '\n{"confirmed": bool, "matches": [str, ...], "mismatches": [str, ...],'
-    ' "reason": str}'
-)
+VERIFIER_SYSTEM_PROMPT = _load_prompt("verifier_system.txt")
 
 
 class VerificationDecision(BaseModel):
@@ -175,15 +136,12 @@ class VLMResult:
     image_height: int = 0
 
 
-_HEADING_TOKENS = {"left", "center", "right"}
-
-
 def _clamp_distance(v) -> float:
     try:
         d = float(v)
     except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(2.0, d))
+        return _DIST_MIN
+    return max(_DIST_MIN, min(_DIST_MAX, d))
 
 
 def _coerce_heading(v) -> str:
@@ -357,7 +315,7 @@ class VLMClient:
                         {"role": "user", "content": prompt, "images": [img_b64]},
                     ],
                     format=NAV_DECISION_SCHEMA,
-                    options={"temperature": 0.3},
+                    options={"temperature": DETECTION_TEMPERATURE},
                     stream=False,
                     keep_alive=keep_alive,
                 )
@@ -440,7 +398,7 @@ class VLMClient:
                         {"role": "user", "content": user_prompt, "images": [img_b64]},
                     ],
                     format=VERIFY_DECISION_SCHEMA,
-                    options={"temperature": 0.1},  # lower temp → more deterministic verdicts
+                    options={"temperature": VERIFICATION_TEMPERATURE},  # lower temp → more deterministic verdicts
                     stream=False,
                     keep_alive=keep_alive,
                 )

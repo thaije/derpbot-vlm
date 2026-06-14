@@ -19,6 +19,11 @@ android {
         viewBinding = true
     }
 
+    // Bundle the repo-root shared/ VLM brain (prompts + schema) as app assets so
+    // the robot reads the SAME source of truth as the Python sim agent (#19).
+    // At runtime: assets/prompts/detection_system.txt, assets/vlm_schema.json …
+    sourceSets["main"].assets.srcDir("../../shared")
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

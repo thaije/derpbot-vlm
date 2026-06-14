@@ -1,0 +1,31 @@
+{
+  "_comment": "Single source of truth for the VLM brain, shared by the Python sim agent (agent/vlm_client.py) and the Android robot app. Edit prompts in shared/prompts/*.txt.",
+  "navigation_decision": {
+    "location_values": [
+      "far left",
+      "left",
+      "center-left",
+      "center",
+      "center-right",
+      "right",
+      "far right"
+    ],
+    "heading_values": [
+      "center",
+      "left",
+      "right"
+    ],
+    "drive_distance_m": {
+      "min": 0.0,
+      "max": 2.0
+    }
+  },
+  "image": {
+    "max_dim": 768,
+    "jpeg_quality": 90
+  },
+  "inference": {
+    "detection_temperature": 0.3,
+    "verification_temperature": 0.1
+  }
+}

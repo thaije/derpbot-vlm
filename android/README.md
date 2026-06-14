@@ -30,9 +30,13 @@ robot required to know the bytes are correct.
   `:rvr` protocol verified; `:app` `RvrBleConnection` + a button harness that
   connects, wakes, drives a 1 s burst, stops, and reads battery.
 - **Step 2 — Camera (CameraX ImageAnalysis → JPEG):** TODO, in `:app`.
-- **Step 3 — Cloud VLM client:** TODO. Reuse the prompt/schema from
-  `agent/vlm_client.py` (Ollama cloud `gemma4:31b-cloud`); decision schema is
-  `{target_visible, target_location, heading, drive_distance_m, reason}`.
+- **Step 3 — Cloud VLM client (on-phone):** TODO. The phone calls Ollama-cloud
+  (`gemma4:31b-cloud`) directly — no server in the loop. Prompts + schema are
+  NOT re-authored in Kotlin: they're bundled from the repo-root `shared/` dir as
+  assets (see `app/build.gradle.kts`), the same files the Python sim agent loads,
+  so there is one source of truth. The Kotlin client ports the HTTP call + the
+  tolerant JSON parser. Decision schema: `{target_visible, target_location,
+  heading, drive_distance_m, reason}`.
 - **Step 4 — Control loop (VLM → drive), bbox-size "arrived" proxy:** TODO.
 - **Step 5 — Safety (IMU bump heuristic + STOP):** STOP button exists; bump TODO.
 - **Step 6 — Logging:** TODO.
