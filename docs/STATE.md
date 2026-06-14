@@ -153,3 +153,8 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Bumper back-off: reverse capped, turn unconditional.** Reverse is gated by rear clearance; the recovery turn is left unconditional. Duration 1.5 s.
 - **LiDAR blind-zone is handled.** `range_min = 0.15 m`; rays < `range_min` are treated as obstacles at `range_min`.
 - **Passthrough mode** (debug only): `--no-safety` skips ALL filtering including bumper.
+
+### Real-robot (RVR+ / Android, #19) — separate stack in `android/`
+- **No official Android RVR SDK exists** (the only one was archived 2019, for the Sphero ball). Don't go looking for it. BLE = clean-room Kotlin port of the Sphero v2 protocol in `:rvr`, verified byte-for-byte vs `spherov2.py`.
+- **v2 wire protocol**: SOP `0x8D`/EOP `0xD8`/escape `0xAB`; checksum `0xFF-(sum&0xFF)`; target byte `(1<<4)|proc` (PRIMARY=1=`0x11`, SECONDARY=2=`0x12`). Power DID=19, Drive DID=22. RVR has **no anti-DoS handshake**.
+- **BLE GATT**: Sphero v2 API service `00010001-574f-...`, single write+notify char `00010002-574f-...`. Confirm on first hardware bring-up. `./gradlew :rvr:test` runs the protocol tests on a plain JVM (no device).
