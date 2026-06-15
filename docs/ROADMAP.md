@@ -26,10 +26,12 @@ Done when ≥ 4/5 success and ≤ 1 FP/seed. Starting hypotheses in the issue.
 ### 2. RVR+ real-robot Phase 1 · [#19](https://github.com/thaije/derpbot-vlm/issues/19)
 Sphero RVR+ + Android phone + cloud VLM — no ROS, no LiDAR (code in `android/`).
 No official Android RVR SDK exists → clean-room Kotlin port of the Sphero v2 BLE
-protocol (`:rvr` module, verified vs `spherov2.py`). **Step 1 done** (protocol +
-`RvrBleConnection` + bring-up harness; pending on-hardware test). Remaining:
-camera (2) → VLM client (3) → control loop w/ bbox-size "arrived" proxy (4) →
-safety/bump (5) → logging (6). Steps 2-3 parallelizable; Step 4 integrates.
+protocol (`:rvr` module, verified vs `spherov2.py`). **Steps 1-4 done and
+hardware-verified** — RVR drives end-to-end from cloud-VLM decisions
+(`CameraManager` + `VlmClient` port of `vlm_client.py` reading `shared/` from
+assets + `ControlLoop`). Remaining: IMU bump-detect (5; STOP override already
+live) → logging (6). Open: `SPEED_MPS=0.35` distance→duration mapping is
+uncalibrated; non-localhost cloud calls need an Ollama API key (Bearer).
 
 ---
 
