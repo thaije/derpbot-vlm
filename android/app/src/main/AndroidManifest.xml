@@ -24,8 +24,9 @@
     <application
         android:allowBackup="true"
         android:label="Derpbot RVR"
+        android:usesCleartextTraffic="true"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Material3.DayNight">
+        android:theme="@style/Theme.Material3.DayNight.NoActionBar">
 
         <activity
             android:name=".MainActivity"
