@@ -32,6 +32,14 @@ hardware-verified** — RVR drives end-to-end from cloud-VLM decisions
 assets + `ControlLoop`). Remaining: IMU bump-detect (5; STOP override already
 live) → logging (6). Open: `SPEED_MPS=0.35` distance→duration mapping is
 uncalibrated; non-localhost cloud calls need an Ollama API key (Bearer).
+**Blocked on #20 for fast iteration before tackling Steps 5-6.**
+
+### 3. RVR dev loop: scriptable phone · [#20](https://github.com/thaije/derpbot-vlm/issues/20) — **next up**
+Remove the USB-tether + manual-input friction from testing the app (#19): wireless
+adb, persisted config (API key entered once), and intent-driven autostart
+(`am start … --es target … --ez autostart true`). Lets a full run be deployed,
+started, and observed over WiFi with no on-phone typing. Pure dev-loop tooling;
+keeps the working phone architecture. Unblocks faster iteration on #19 Steps 5-6.
 
 ---
 
