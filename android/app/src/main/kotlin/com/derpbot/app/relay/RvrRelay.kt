@@ -11,6 +11,7 @@ import com.derpbot.app.ble.RvrBleConnection
 import com.derpbot.app.camera.CameraManager
 import com.derpbot.rvr.protocol.RvrCommands
 import kotlinx.coroutines.*
+import kotlin.math.max
 import okhttp3.*
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit

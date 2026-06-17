@@ -17,6 +17,8 @@ from typing import Callable, Optional
 import websockets
 from PIL import Image
 
+from websockets.protocol import State as WsState
+
 from .protocol import (
     BatteryMessage,
     BleStateMessage,
@@ -74,7 +76,7 @@ class PhoneRelay:
 
     @property
     def phone_connected(self) -> bool:
-        return self._ws is not None and not self._ws.closed
+        return self._ws is not None and self._ws.state == WsState.OPEN
 
     async def start(self) -> None:
         self._server = await websockets.serve(
