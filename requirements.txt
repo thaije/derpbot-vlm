@@ -6,3 +6,4 @@ pyyaml
 numpy<2
 opencv-python-headless
 rclpy
+websockets

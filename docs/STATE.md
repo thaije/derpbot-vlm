@@ -135,7 +135,7 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Image/depth callbacks store the raw msg only; convert lazily on demand (#15).** cv_bridge+PIL on every frame (~30 Hz) needlessly loads the executor; conversion is only needed ~once per VLM cycle. `_get_latest_image()` / `_project_target_from_location()` do the conversion.
 
 ### VLM / Ollama
-- **Prompts + schema + inference params live in `shared/`** (`prompts/*.txt`, `vlm_schema.json`), loaded by `vlm_client.py` AND bundled as Android assets (#19). ONE source of truth — edit there, never re-inline. Loaded verbatim (byte-identical).
+- **Prompts + schema + inference params live in `shared/`** (`prompts/*.txt`, `vlm_schema.json`), loaded by `vlm_client.py` (both sim agent and `rvr_bridge`). ONE source of truth — edit there, never re-inline. Loaded verbatim (byte-identical).
 - **Default cloud model: `gemma4:31b-cloud`**
 - **`target_location` replaces `target_bbox`.** The VLM emits a semantic position string (left/center/right etc.) instead of pixel coordinates. This is mapped to a bearing fraction for depth-projection and planner heading.
 - **Location bearings** are in `depth_projection.py`: far left=-0.75, left=-0.42, center-left=-0.21, center=0, center-right=0.21, right=0.42, far right=0.75 rad (positive=left/CCW).
@@ -155,7 +155,10 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **LiDAR blind-zone is handled.** `range_min = 0.15 m`; rays < `range_min` are treated as obstacles at `range_min`.
 - **Passthrough mode** (debug only): `--no-safety` skips ALL filtering including bumper.
 
-### Real-robot (RVR+ / Android, #19) — separate stack in `android/`
-- **No official Android RVR SDK exists** (the only one was archived 2019, for the Sphero ball). Don't go looking for it. BLE = clean-room Kotlin port of the Sphero v2 protocol in `:rvr`, verified byte-for-byte vs `spherov2.py`.
-- **v2 wire protocol**: SOP `0x8D`/EOP `0xD8`/escape `0xAB`; checksum `0xFF-(sum&0xFF)`; target byte `(1<<4)|proc` (PRIMARY=1=`0x11`, SECONDARY=2=`0x12`). Power DID=19, Drive DID=22. RVR has **no anti-DoS handshake**.
-- **BLE GATT**: Sphero v2 API service `00010001-574f-...`, single write+notify char `00010002-574f-...`. Confirm on first hardware bring-up. `./gradlew :rvr:test` runs the protocol tests on a plain JVM (no device).
+### Real-robot (RVR+ / Android, #21 phone-as-BLE-shell)
+- **Phone is a thin relay**: camera + IMU streamed over WebSocket to computer; motor commands received from computer over WebSocket. All intelligence (VLM, planner, safety) runs in Python (`rvr_bridge/`). No APK rebuild for logic changes.
+- **WebSocket protocol** (`rvr_bridge/protocol.py`): JSON messages with `type` field. Phone→computer: `frame`, `imu`, `battery`, `ble_state`. Computer→phone: `capture_frame`, `drive`, `raw_motors`, `stop`, `wake`, `sleep`, `reset_yaw`, `get_battery`. Port 8765.
+- **`:rvr` module unchanged**: clean-room Kotlin port of Sphero v2 BLE protocol, verified vs `spherov2.py`.
+- **v2 wire protocol**: SOP `0x8D`/EOP `0xD8`/escape `0xAB`; checksum `0xFF-(sum&0xFF)`; target byte `(1<<4)|proc` (PRIMARY=`0x11`, SECONDARY=`0x12`). Power DID=19, Drive DID=22. No anti-DoS handshake.
+- **BLE GATT**: Sphero v2 API service `00010001-574f-...`, single write+notify char `00010002-574f-...`.
+- **IMU bump detect**: `BumpDetector` (accelerometer RMS spike over baseline) replaces sim bumper topic for real-robot safety. Threshold configurable (`--bump-threshold`).

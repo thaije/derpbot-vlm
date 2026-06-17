@@ -19,11 +19,7 @@ android {
         viewBinding = true
     }
 
-    // Bundle the repo-root shared/ VLM brain (prompts + schema) as app assets so
-    // the robot reads the SAME source of truth as the Python sim agent (#19).
-    // At runtime: assets/prompts/detection_system.txt, assets/vlm_schema.json …
-    sourceSets["main"].assets.srcDir("../../shared")
-
+    // shared/ assets no longer needed on phone — VLM runs on the computer (#21).
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -48,6 +44,6 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
 
-    // Step 3 — HTTP client for Ollama
+    // WebSocket client (OkHttp) for relay connection to computer (#21)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
