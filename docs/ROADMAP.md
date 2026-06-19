@@ -23,10 +23,6 @@ Top priority — the only remaining failure mode after #14 (3/5) and #15. Two pa
 same target projects to drifted map positions → extra track ids (10 FPs across the sweep).
 Done when ≥ 4/5 success and ≤ 1 FP/seed. Starting hypotheses in the issue.
 
-### Closed: #21 (phone-as-BLE-shell) + #19 (RVR+ Phase 1)
-Full closed-loop dev verified — drive robot + VLM agent from computer, zero phone interaction.
-Real-robot VLM agent found a shoe end-to-end (camera → VLM → verify → drive). Invariants in STATE.md.
-
 ---
 
 ## Later
