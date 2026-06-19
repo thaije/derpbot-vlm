@@ -23,6 +23,12 @@ Top priority — the only remaining failure mode after #14 (3/5) and #15. Two pa
 same target projects to drifted map positions → extra track ids (10 FPs across the sweep).
 Done when ≥ 4/5 success and ≤ 1 FP/seed. Starting hypotheses in the issue.
 
+### 2. Real-robot structured scenario eval · [#23](https://github.com/thaije/derpbot-vlm/issues/23)
+First real-world benchmark. Two modes: **hard** (one-shot, autonomous, post-hoc scoring from
+saved frames + tape) and **few-shot** (N attempts, human gives `yes`/`wrong`/`far` feedback
+when robot declares arrived). 5 objects × 3 runs × 2 modes = 30 trials. Reveals whether sim
+failure modes transfer to real world. Builds on #21 (closed).
+
 ---
 
 ## Later
