@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="logo.svg">
+    <img src="logo-animated.svg" width="200" alt="derpbot-vlm logo">
+  </picture>
+</p>
+
 # derpbot-vlm
 
 VLM-steered robot agent for the [Autonomous Robotics Simulation Testbed (ARST)](https://github.com/thaije/robot-sandbox). Uses a vision-language model to interpret the camera feed and produce velocity commands. No Nav2, no SLAM, no frontier explorer — the intelligence lives in the model.

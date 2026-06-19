@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="360" height="360" role="img" aria-label="derpbot logo - static">
+<ellipse cx="180" cy="298" rx="90" ry="10" fill="#2d2a24" opacity="0.15"></ellipse>
+<rect x="66" y="170" width="40" height="120" rx="16" fill="#2d2a24"></rect>
+<clipPath id="ctl"><rect x="66" y="170" width="40" height="120" rx="16"></rect></clipPath>
+<g clip-path="url(#ctl)"><rect x="70" y="158" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="176" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="194" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="212" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="230" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="248" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="266" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="284" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="70" y="302" width="32" height="6" rx="3" fill="#5b554c"></rect></g>
+<rect x="254" y="170" width="40" height="120" rx="16" fill="#2d2a24"></rect>
+<clipPath id="ctr"><rect x="254" y="170" width="40" height="120" rx="16"></rect></clipPath>
+<g clip-path="url(#ctr)"><rect x="258" y="158" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="176" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="194" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="212" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="230" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="248" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="266" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="284" width="32" height="6" rx="3" fill="#5b554c"></rect><rect x="258" y="302" width="32" height="6" rx="3" fill="#5b554c"></rect></g>
+<rect x="103" y="168" width="154" height="120" rx="24" fill="#fff" stroke="#2d2a24" stroke-width="7"></rect>
+<rect x="140" y="236" width="80" height="6" rx="3" fill="#2d2a24" opacity="0.5"></rect>
+<rect x="140" y="250" width="80" height="6" rx="3" fill="#2d2a24" opacity="0.3"></rect>
+<circle cx="180" cy="150" r="48" fill="#fff" stroke="#2d2a24" stroke-width="7"></circle>
+<circle cx="180" cy="150" r="28" fill="#e07a4f"></circle>
+<circle cx="180" cy="150" r="14" fill="#2d2a24"></circle>
+<circle cx="190" cy="140" r="4.5" fill="#fff" opacity="0.9"></circle>
+</svg>
