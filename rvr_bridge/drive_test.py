@@ -133,6 +133,7 @@ async def drive_once(
     raw_motors: bool,
     sleep_after: bool,
     ready_timeout: float,
+    wake_delay: float = 3.0,
 ) -> int:
     """Returns 0 on success, non-zero on failure."""
     logger.info("Waiting for phone to connect on ws://%s:%d ...",
@@ -160,7 +161,8 @@ async def drive_once(
 
     logger.info("BLE ready. Waking RVR + zeroing heading.")
     await relay.send(WakeMessage())
-    await asyncio.sleep(1.0)
+    # RVR needs ~2-3s to wake from soft-sleep before it accepts drive commands.
+    await asyncio.sleep(wake_delay)
     await relay.send(ResetYawMessage())
     await asyncio.sleep(0.5)
 
@@ -209,6 +211,8 @@ def main() -> None:
                    help="Don't send SLEEP after stop (keep RVR awake)")
     p.add_argument("--ready-timeout", type=float, default=40.0,
                    help="Seconds to wait for phone/BLE ready (default 40)")
+    p.add_argument("--wake-delay", type=float, default=3.0,
+                   help="Seconds to wait after WAKE before driving (default 3.0)")
     p.add_argument("--device", default=None,
                    help="ADB device serial (default: auto-pick WiFi device)")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -255,6 +259,7 @@ def main() -> None:
             raw_motors=args.raw_motors,
             sleep_after=not args.no_sleep,
             ready_timeout=args.ready_timeout,
+            wake_delay=args.wake_delay,
         )
 
     try:

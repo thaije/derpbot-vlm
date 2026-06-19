@@ -132,13 +132,22 @@ class RvrBleConnection(
                 return
             }
             commandChar = char
+            Log.i(TAG, "Service discovered, enabling notifications...")
             enableNotifications(g, char)
         }
 
         @SuppressLint("MissingPermission")
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
             // CCCD write completed → notifications are live, we're ready to drive.
-            if (descriptor.uuid == CCCD_UUID) state = State.READY
+            if (descriptor.uuid == CCCD_UUID) {
+                Log.i(TAG, "CCCD write status=$status → READY")
+                state = State.READY
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onCharacteristicWrite(g: BluetoothGatt, char: BluetoothGattCharacteristic, status: Int) {
+            Log.i(TAG, "onCharacteristicWrite status=$status (0=success)")
         }
 
         // Notifications: API 33+ delivers bytes via the `value` overload.
@@ -178,19 +187,22 @@ class RvrBleConnection(
         val g = gatt
         val char = commandChar
         if (g == null || char == null || state != State.READY) {
-            Log.w(TAG, "send() ignored — not ready (state=$state)")
+            Log.w(TAG, "send() ignored — not ready (state=$state, gatt=${g != null}, char=${char != null})")
             return
         }
         val bytes = packet.build()
+        Log.i(TAG, "send() DID=${packet.did} CID=${packet.cid} ${bytes.size}B state=$state")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(char, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            val rc = g.writeCharacteristic(char, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            Log.i(TAG, "writeCharacteristic rc=$rc (1=success)")
         } else {
             @Suppress("DEPRECATION")
             char.value = bytes
             @Suppress("DEPRECATION")
             char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
             @Suppress("DEPRECATION")
-            g.writeCharacteristic(char)
+            val rc = g.writeCharacteristic(char)
+            Log.i(TAG, "writeCharacteristic rc=$rc (true=success)")
         }
     }
 
