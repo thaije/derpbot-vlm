@@ -150,7 +150,8 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 
 ### Safety / Navigation
 - **`ReactiveSafetyLayer` owns `/cmd_vel`.** Upstream callers (planner, teleop) use `safety.command(lin, ang)`; safety publishes at 20 Hz.
-- **Geometry veto is DISABLED by default (#14).** Config key `safety.geometry_veto: false`. The VLM sees LiDAR clearance in the prompt and chooses its own distances/headers. The old directional veto caused oscillation near walls (flipping commands mid-rotation). Bumper back-off remains active.
+   - **Geometry veto removed (code cleanup, #14).** The `geometry_veto` config key, `set_geometry_veto()` / `is_veto_active()` methods, and ~150 lines of directional-clearance/rotation-veto/wedge-escape code were removed from `safety_layer.py` (559→407 LOC). The VLM sees LiDAR clearance in the prompt and chooses its own distances/headers. Bumper back-off remains active.
+   - **Scan logic extracted to `agent/scan_controller.py`** (#14). `ScanController` holds the step-stop-shoot state machine; `agent_node.py` provides a `ScanContext` with the shared dependencies (794→675 LOC).
 - **Bumper back-off: reverse capped, turn unconditional.** Reverse is gated by rear clearance; the recovery turn is left unconditional. Duration 1.5 s.
 - **LiDAR blind-zone is handled.** `range_min = 0.15 m`; rays < `range_min` are treated as obstacles at `range_min`.
 - **Passthrough mode** (debug only): `--no-safety` skips ALL filtering including bumper.

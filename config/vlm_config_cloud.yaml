@@ -39,7 +39,6 @@ actions:
 safety:
   min_range_m: 0.25
   forward_arc_deg: 30
-  geometry_veto: false
 
 ros:
   camera_topic: /derpbot_0/rgbd/image

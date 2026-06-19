@@ -8,6 +8,7 @@ import time
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Event, Lock, Thread
+from typing import Optional
 
 import yaml
 from PIL import Image, ImageDraw, ImageFont
@@ -31,14 +32,8 @@ COMMIT_REPLAN_FRACTION = 0.25
 # every direction, one stationary frame at a time. Stationary is REQUIRED: depth
 # back-projection localises the target using the latest depth + odom, so the robot
 # must not be turning between capture and projection or the position is wrong.
-SCAN_STEPS = 6                          # 6 × 60° tiles the circle (90° HFOV → 30° overlap)
-SCAN_STEP_RAD = 2.0 * math.pi / SCAN_STEPS
-SCAN_SETTLE_S = 0.4                     # sim-seconds to stand still before a shot
-SCAN_ROTATE_TIMEOUT_S = 4.0            # give up rotating a step (fully wedged) and shoot anyway
-SCAN_ANG_SPEED = 0.7                    # rad/s sweep speed
-SCAN_AFTER_NO_DETECT_S = 30.0          # min sim-seconds since last confirmed detection → scan
-SCAN_MIN_ROT_CLEARANCE_M = 0.20        # need ≥ this rotation clearance to bother sweeping
-                                       # (else the robot is in a corridor too tight to spin)
+# Active-scan constants now live in agent.scan_controller.
+from agent.scan_controller import ScanController, ScanContext
 
 CAMERA_HFOV_RAD = 1.5708
 
@@ -164,22 +159,8 @@ class AgentNode:
             os.makedirs(frame_dir, exist_ok=True)
             self._frame_seq = 0
 
-        # Active-scan state machine (see SCAN_* constants).
-        # Uses cumulative yaw tracking (like robot_control.py cmd_rotate):
-        # each tick accumulates the yaw delta from odom, so wrap-around is
-        # handled correctly and the robot never overshoots. The robot stops,
-        # settles, then shoots — never rotates while a VLM query is in flight.
-        self._scan_active = False
-        self._scan_phase = "settle"          # settle → query → rotate → settle → …
-        self._scan_shots = 0
-        self._scan_dir = 1.0
-        self._scan_settle_until = 0.0
-        self._scan_rotate_deadline = 0.0
-        self._scan_prev_yaw = 0.0            # yaw at last tick (for cumulative tracking)
-        self._scan_cumulative_rad = 0.0      # total yaw rotated since step start
-        self._scan_target_rad = 0.0          # how far to rotate this step (radians)
-        self._scan_was_blocked = False       # True when bumper back-off is active
-        self._last_scan_end_sim = -1e9
+        # Active-scan state machine lives in agent.scan_controller.ScanController.
+        self._scan: Optional[ScanController] = None
         self._last_confirmed_sim = -1e9
 
     @staticmethod
@@ -450,151 +431,43 @@ class AgentNode:
         self._last_confirmed_sim = sim_now
         return proj, True
 
-    # ── Active scan (step-stop-shoot rotation sweep) ────────────────────────
-    # Each step: stop → settle → shoot → rotate SCAN_STEP_RAD → repeat.
-    # Rotation uses the SAME closed-loop cumulative-yaw tracker as
-    # robot_control.py cmd_rotate (accumulate odom deltas, proportional ramp,
-    # 1.5° stop threshold) — accurate to ~1° PROVIDED odom is fresh. Odom
-    # freshness depends on the SingleThreadedExecutor fix (#15, see _spin);
-    # before it the executor busy-spin starved odom and the tracker read a
-    # stale yaw, measuring 0° while the robot spun freely.
-    # The robot never rotates while a VLM query is in flight.
-    @staticmethod
-    def _angle_diff(a: float, b: float) -> float:
-        """Shortest signed angular difference a - b, result in (-pi, pi]."""
-        return math.atan2(math.sin(a - b), math.cos(a - b))
+    # ── Active scan ──────────────────────────────────────────────────────
+    # The scan state machine lives in agent.scan_controller.ScanController.
+    # The agent provides a ScanContext with the shared dependencies.
 
-    def _start_scan(self, sim_now: float) -> None:
-        _, _, yaw = self._get_odom()
-        self._scan_active = True
-        self._scan_phase = "settle"          # shoot the current heading first
-        self._scan_shots = 0
-        self._scan_dir = 1.0
-        self._scan_prev_yaw = yaw
-        self._scan_cumulative_rad = 0.0
-        self._scan_target_rad = 0.0          # first shot: no rotation needed
-        self._scan_settle_until = sim_now + SCAN_SETTLE_S
-        self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
-        self.safety.command(0.0, 0.0, src="scan-stop")
-        logger.info("SCAN: start (%d shots × %.0f°)",
-                    SCAN_STEPS, math.degrees(SCAN_STEP_RAD))
+    def _make_scan_context(self) -> ScanContext:
+        return ScanContext(
+            get_odom=self._get_odom,
+            sim_now=self._sim_now,
+            safety_command=self.safety.command,
+            is_blocked=self.safety.is_blocked,
+            rotation_clearance_m=self.safety.rotation_clearance_m,
+            memory_mark=self.memory.mark,
+            submit_vlm_query=self._submit_vlm_query,
+            get_vlm_query=lambda: self._vlm_future,
+            clear_vlm_future=self._clear_vlm_future,
+            evaluate_candidate=self._evaluate_candidate,
+            on_sighting=self._on_scan_sighting,
+            end_scan=self._end_scan,
+            debug_pause=self._debug_pause,
+        )
 
-    def _end_scan(self, sim_now: float, reason: str = "complete") -> None:
-        self._scan_active = False
-        self._last_scan_end_sim = sim_now
-        self.safety.command(0.0, 0.0, src="scan-stop")
-        logger.info("SCAN: end (%s)", reason)
+    def _clear_vlm_future(self) -> None:
+        self._vlm_future = None
 
-    def _scan_prepare_next_step(self, sim_now: float) -> None:
-        """After a shot, prepare to rotate by SCAN_STEP_RAD for the next shot."""
-        self._scan_shots += 1
-        if self._scan_shots >= SCAN_STEPS:
-            self._end_scan(sim_now, reason="swept full circle")
-            return
-        _, _, current_yaw = self._get_odom()
-        self._scan_prev_yaw = current_yaw
-        self._scan_cumulative_rad = 0.0
-        self._scan_target_rad = self._scan_dir * SCAN_STEP_RAD
-        self._scan_phase = "rotate"
-        self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
+    def _on_scan_sighting(self, result, x: float, y: float, proj, publish_ok: bool) -> None:
+        from agent.depth_projection import location_to_bearing
+        offset = -location_to_bearing(result.target_location) if result.target_location else None
+        if publish_ok:
+            target_obj = self._mission.get("target_object", "unknown")
+            self._publish_detection(target_obj, location=result.target_location, proj=proj)
+        self.planner.accept_decision(
+            result, self._get_odom()[2], x, y, self._sim_now(),
+            heading_offset_rad=offset)
 
-    def _scan_tick(self, sim_now: float) -> None:
-        """One iteration of the scan state machine. Owns the safety command and
-        the VLM future while a scan is active."""
-        x, y, yaw = self._get_odom()
-        self.memory.mark(x, y)
-
-        # A bumper back-off owns motion; pause scan timing until it clears.
-        # Re-anchor cumulative tracker on resume so back-off yaw change isn't
-        # counted toward the rotation target.
-        if self.safety.is_blocked():
-            if not self._scan_was_blocked:
-                self._scan_was_blocked = True
-            self._scan_rotate_deadline = sim_now + SCAN_ROTATE_TIMEOUT_S
-            return
-        if self._scan_was_blocked:
-            _, _, yaw = self._get_odom()
-            self._scan_prev_yaw = yaw
-            self._scan_was_blocked = False
-
-        if self._scan_phase == "rotate":
-            # Closed-loop rotation using cumulative yaw tracking.
-            # Accumulate odom deltas to avoid wrap-around issues; ramp down
-            # proportionally as we approach the target (like cmd_rotate).
-            x, y, yaw = self._get_odom()
-            delta = self._angle_diff(yaw, self._scan_prev_yaw)
-            self._scan_prev_yaw = yaw
-            self._scan_cumulative_rad += delta
-            remaining = self._scan_target_rad - self._scan_cumulative_rad
-            if abs(remaining) < math.radians(1.5):
-                logger.info("SCAN: step rotated %.0f°/%.0f°, settling",
-                            math.degrees(self._scan_cumulative_rad),
-                            math.degrees(self._scan_target_rad))
-                self.safety.command(0.0, 0.0, src="scan-settle")
-                self._scan_phase = "settle"
-                self._scan_settle_until = sim_now + SCAN_SETTLE_S
-            elif sim_now >= self._scan_rotate_deadline:
-                logger.info("SCAN: rotate timeout (rotated %.0f°/%.0f°) — settling anyway",
-                            math.degrees(self._scan_cumulative_rad),
-                            math.degrees(self._scan_target_rad))
-                self.safety.command(0.0, 0.0, src="scan-settle")
-                self._scan_phase = "settle"
-                self._scan_settle_until = sim_now + SCAN_SETTLE_S
-            else:
-                # Proportional control with deceleration ramp
-                SCAN_ROTATE_KP = 2.0
-                ang_speed = max(-SCAN_ANG_SPEED, min(SCAN_ANG_SPEED, remaining * SCAN_ROTATE_KP))
-                self.safety.command(0.0, ang_speed, src="scan-rotate")
-            return
-
-        if self._scan_phase == "settle":
-            self.safety.command(0.0, 0.0, src="scan-settle")
-            if sim_now >= self._scan_settle_until and self._vlm_future is None:
-                self._submit_vlm_query()
-                if self._vlm_future is not None:
-                    self._scan_phase = "query"
-                else:
-                    logger.warning("SCAN: VLM submission failed (no image?) — ending scan")
-                    self._end_scan(sim_now, reason="vlm_submit_failed")
-            return
-
-        if self._scan_phase == "query":
-            self.safety.command(0.0, 0.0, src="scan-query")
-            if self._vlm_future is None:
-                logger.warning("SCAN: VLM future is None in query phase — ending scan")
-                self._end_scan(sim_now, reason="vlm_future_none")
-                return
-            if not self._vlm_future.done():
-                return
-            try:
-                result = self._vlm_future.result()
-            except Exception as e:
-                logger.error("SCAN VLM error: %s", e)
-                result = None
-            self._vlm_future = None
-            if result is not None:
-                logger.info("SCAN shot %d/%d: vis=%s | %s",
-                            self._scan_shots + 1, SCAN_STEPS,
-                            result.target_visible, result.reason[:80])
-                proj, publish_ok = self._evaluate_candidate(result, sim_now)
-                # Refresh sim_now and pose after blocking VLM calls
-                sim_now = self._sim_now()
-                x, y, yaw = self._get_odom()
-                if result.target_visible:
-                    offset = self._heading_from_location(result.target_location)
-                    if publish_ok:
-                        target_obj = self._mission.get("target_object", "unknown")
-                        self._publish_detection(
-                            target_obj, location=result.target_location, proj=proj)
-                    self.planner.accept_decision(
-                        result, yaw, x, y, sim_now, heading_offset_rad=offset)
-                    self._end_scan(sim_now, reason="approaching sighting")
-                    self._debug_pause()
-                    return
-            # Refresh sim_now after blocking VLM call
-            sim_now = self._sim_now()
-            self._scan_prepare_next_step(sim_now)
-            return
+    def _end_scan(self, sim_now: float, reason: str) -> None:
+        if self._scan:
+            self._scan.end(sim_now, reason)
 
     def _check_mission_status(self) -> bool:
         url = self.config["ros"]["mission_url"]
@@ -664,8 +537,8 @@ class AgentNode:
                     break
 
                 # Active scan owns motion + the VLM future while running.
-                if self._scan_active:
-                    self._scan_tick(sim_now)
+                if self._scan is not None and self._scan.active:
+                    self._scan.tick(sim_now)
                     time.sleep(0.05)
                     continue
 
@@ -685,7 +558,8 @@ class AgentNode:
                         sim_now = self._sim_now()
                         offset = None
                         if result.target_visible:
-                            self._last_scan_end_sim = sim_now
+                            if self._scan:
+                                self._scan.last_end_sim = sim_now
                             offset = self._heading_from_location(result.target_location)
                         self.planner.accept_decision(
                             result, yaw, x, y, sim_now, heading_offset_rad=offset)
@@ -707,14 +581,21 @@ class AgentNode:
 
                 # Scan-on-no-detection: trigger a sweep when no detection has
                 # been confirmed for SCAN_AFTER_NO_DETECT_S seconds.
-                if (not self.planner.in_approach()
+                from agent.scan_controller import (
+                    SCAN_AFTER_NO_DETECT_S, SCAN_MIN_ROT_CLEARANCE_M)
+                if (self._scan is None or not self._scan.active):
+                    should_scan = (
+                        not self.planner.in_approach()
                         and not self.safety.is_blocked()
                         and (sim_now - self._last_confirmed_sim) >= SCAN_AFTER_NO_DETECT_S
-                        and self.safety.rotation_clearance_m() >= SCAN_MIN_ROT_CLEARANCE_M):
-                    self.planner.cancel("scan")
-                    self._vlm_future = None
-                    self._start_scan(sim_now)
-                    continue
+                        and self.safety.rotation_clearance_m() >= SCAN_MIN_ROT_CLEARANCE_M
+                    )
+                    if should_scan:
+                        self.planner.cancel("scan")
+                        self._vlm_future = None
+                        self._scan = ScanController(self._make_scan_context())
+                        self._scan.start(sim_now)
+                        continue
 
                 # Issue next VLM query. We pipeline:
                 #   - planner idle (commitment ended) → immediate replan

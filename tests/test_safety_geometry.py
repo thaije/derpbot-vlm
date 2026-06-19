@@ -1,8 +1,9 @@
-"""Unit tests for the geometry-aware safety layer veto (#12).
+"""Unit tests for the safety layer clearance/cap helpers (#12, #14).
 
-We import the static methods + class constants directly so we don't have to
-spin up a ROS node. The clearance / cap helpers are pure functions of
-(scan_points, robot dimensions, cushion).
+The geometry veto (rotation_allowed, wedge_reverse) was removed in #14.
+These tests cover the remaining live helpers: directional clearance,
+rotation clearance, and the linear velocity cap — all used by the bumper
+back-off and the agent's scan gate.
 """
 
 import math
@@ -98,39 +99,6 @@ class TestDirectionalClearance:
         assert c == pytest.approx(0.15, abs=1e-6)
 
 
-# ---- _rotation_allowed (directional veto) -------------------------------
-
-
-class TestRotationAllowed:
-    def setup_method(self):
-        self.s = _stub_layer()
-
-    def test_clear_room_allows_either_direction(self):
-        points = [(0.0, 2.0)]  # far ahead, nothing within cushion
-        assert self.s._rotation_allowed(points, +0.8)
-        assert self.s._rotation_allowed(points, -0.8)
-
-    def test_zero_command_always_allowed(self):
-        points = [(math.radians(30), C - 0.01)]  # obstacle inside corner
-        assert self.s._rotation_allowed(points, 0.0)
-
-    def test_obstacle_front_left_blocks_turning_into_it(self):
-        # Obstacle ahead and left of centre (20°), within the cushion of the
-        # front edge. Turning the body CW (−) sweeps the front-LEFT corner
-        # down toward it → blocked. Turning CCW (+) sweeps it away → allowed
-        # (the wedge escape).
-        points = [(math.radians(20), 0.18)]
-        assert self.s._rotation_allowed(points, +0.8)
-        assert not self.s._rotation_allowed(points, -0.8)
-
-    def test_symmetric_obstacle_front_right(self):
-        # Mirror: obstacle ahead and right of centre. CCW (+) turns into it,
-        # CW (−) escapes.
-        points = [(math.radians(-20), 0.18)]
-        assert self.s._rotation_allowed(points, -0.8)
-        assert not self.s._rotation_allowed(points, +0.8)
-
-
 # ---- _rotation_clearance_m ----------------------------------------------
 
 
@@ -196,32 +164,6 @@ class TestSafeLinearCap:
         b = self.s._safe_linear_cap(CUSHION + 0.10)
         c = self.s._safe_linear_cap(CUSHION + 0.20)
         assert 0 < a < b < c
-
-
-# ---- _wedge_reverse_speed -----------------------------------------------
-
-
-class TestWedgeReverse:
-    def setup_method(self):
-        self.s = _stub_layer()
-        self.escape = ReactiveSafetyLayer.WEDGE_ESCAPE_SPEED_M_S
-
-    def test_clear_rear_allows_full_escape_speed(self):
-        points = [(0.0, 0.30)]  # obstacle only in front
-        assert self.s._wedge_reverse_speed(points) == pytest.approx(self.escape)
-
-    def test_obstacle_at_rear_face_blocks_escape(self):
-        points = [(math.pi, F + CUSHION)]  # right at rear cushion boundary
-        assert self.s._wedge_reverse_speed(points) == 0.0
-
-    def test_tight_rear_reduces_escape_speed(self):
-        points = [(math.pi, F + CUSHION + 0.015)]
-        v = self.s._wedge_reverse_speed(points)
-        assert 0.0 < v < self.escape
-
-    def test_front_obstacle_does_not_block_reverse(self):
-        points = [(0.0, F)]  # touching front face — the wedge cause
-        assert self.s._wedge_reverse_speed(points) == pytest.approx(self.escape)
 
 
 # ---- end-to-end: clearance after the LiDAR blind-zone fix ----------------
