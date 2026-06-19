@@ -162,3 +162,9 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **v2 wire protocol**: SOP `0x8D`/EOP `0xD8`/escape `0xAB`; checksum `0xFF-(sum&0xFF)`; target byte `(1<<4)|proc` (PRIMARY=`0x11`, SECONDARY=`0x12`). Power DID=19, Drive DID=22. No anti-DoS handshake.
 - **BLE GATT**: Sphero v2 API service `00010001-574f-...`, single write+notify char `00010002-574f-...`.
 - **IMU bump detect**: `BumpDetector` (accelerometer RMS spike over baseline) replaces sim bumper topic for real-robot safety. Threshold configurable (`--bump-threshold`).
+- **WiFi deploy** (no USB cable needed after initial setup):
+  1. First time over USB: `adb tcpip 5555` then `adb connect <phone-ip>:5555`. After that WiFi ADB persists across reboots.
+  2. `cd android && ./deploy.sh [ws://<laptop-ip>:8765]` — builds APK, patches default server URL, installs over WiFi ADB, launches app.
+  3. If `adb install` fails with signature mismatch: `adb uninstall com.derpbot.app` then redeploy.
+  4. VPN caveat: NordVPN blocks inbound local traffic by default. Enable "Allow local network access" (or disable VPN) for phone↔laptop WebSocket.
+- **Android SDK** at `$HOME/Android` (cmdline-tools, platform-36, build-tools-36). JDK 21 required. `ANDROID_HOME` and `PATH` set in `deploy.sh`.
