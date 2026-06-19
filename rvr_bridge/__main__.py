@@ -30,6 +30,10 @@ def main() -> None:
     parser.add_argument("--speed-mps", type=float, default=0.35, help="Speed in m/s for distance→duration")
     parser.add_argument("--bump-threshold", type=float, default=2.5, help="IMU bump detection threshold factor")
     parser.add_argument("--log-file", default=None, help="JSONL log file path")
+    parser.add_argument("--debug-bus", type=int, default=None, metavar="PORT",
+                        help="Start debug bus WS server on this port (for panel; #24)")
+    parser.add_argument("--teleop-only", action="store_true",
+                        help="Start in teleop mode — autonomous loop paused, panel owns all movement (#24)")
     parser.add_argument("--restart-app", action="store_true",
                         help="Set up adb reverse + restart phone app via ADB (no phone interaction)")
     args = parser.parse_args()
@@ -59,6 +63,8 @@ def main() -> None:
         speed_mps=args.speed_mps,
         bump_threshold_factor=args.bump_threshold,
         log_file=args.log_file,
+        debug_bus_port=args.debug_bus,
+        teleop_only=args.teleop_only,
     )
 
     agent = RvrAgent(config)

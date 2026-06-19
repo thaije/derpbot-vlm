@@ -14,7 +14,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from PIL import Image
 
@@ -39,6 +39,8 @@ BUMP_TURN_DEG = 90
 DRIVE_FLAGS_FORWARD = 0x00
 DRIVE_FLAGS_REVERSE = 0x01
 
+TELEOP_TURN_RATE_DEG = 45
+
 
 @dataclass
 class BridgeConfig:
@@ -56,6 +58,8 @@ class BridgeConfig:
     vlm_interval_s: float = VLM_INTERVAL_S
     bump_threshold_factor: float = 2.5
     log_file: Optional[str] = None
+    debug_bus_port: Optional[int] = None  # #24: if set, start RvrDebugBus
+    teleop_only: bool = False  # #24: start in teleop mode; never autonomously drive
 
 
 class RvrAgent:
@@ -79,13 +83,43 @@ class RvrAgent:
         self._vlm_client = None
         self._log_fh = None
         self._bump_event: Optional[BumpEvent] = None
+        self._debug_bus = None  # #24: set if config.debug_bus_port is not None
+        self._teleop_only = config.teleop_only  # #24: start paused if True
+
+        # Teleop state (#24): when teleop is active the autonomous loop pauses
+        # and the panel owns drive commands.
+        self._teleop_active: bool = False
+        self._teleop_lin: float = 0.0  # -1..1 forward
+        self._teleop_turn: float = 0.0  # -1..1 left
+        self._auto_mode: bool = False  # auto-observe toggle (panel parity with debug_node)
+        self._bump_enabled: bool = True  # bump detector armed (toggle: 'bump')
+        self._latest_frame: Optional[Image.Image] = None  # cached for panel/manual query
+
+        # Callbacks (set by RvrDebugBus if --debug-bus is active; None otherwise).
+        # Each receives a dict of event data; the bus serialises and pushes to browsers.
+        self.on_frame: Optional[Callable[[Image.Image], None]] = None
+        self.on_decision: Optional[Callable[[dict], None]] = None
+        self.on_verifier: Optional[Callable[[dict], None]] = None
+        self.on_imu_event: Optional[Callable[[dict], None]] = None
+        self.on_bump_event: Optional[Callable[[dict], None]] = None
+        self.on_ble_event: Optional[Callable[[dict], None]] = None
+        self.on_battery_event: Optional[Callable[[dict], None]] = None
+        self.on_state_change: Optional[Callable[[dict], None]] = None
 
         self.relay.on_imu = self._on_imu
         self.relay.on_ble_state = self._on_ble_state
+        self.relay.on_battery = self._on_battery
+        self.relay.on_frame = self._on_frame
 
     async def run(self) -> None:
         self._running = True
         await self.relay.start()
+
+        if self.config.debug_bus_port:
+            from .rvr_debug_bus import RvrDebugBus
+            self._debug_bus = RvrDebugBus(
+                self, host="0.0.0.0", port=self.config.debug_bus_port)
+            await self._debug_bus.start()
 
         if self.config.log_file:
             self._log_fh = open(self.config.log_file, "a")
@@ -114,9 +148,16 @@ class RvrAgent:
 
         self._vlm_client = self._make_vlm_client()
 
+        if self._teleop_only:
+            logger.info("Teleop-only mode: autonomous loop paused. Drive via panel.")
+            self._teleop_active = True
+            self._emit_state()
+
         try:
             await self._loop()
         finally:
+            if self._debug_bus:
+                await self._debug_bus.stop()
             await self.relay.send(StopMessage(heading=self._desired_heading))
             await self.relay.stop()
             if self._log_fh:
@@ -147,15 +188,26 @@ class RvrAgent:
 
     async def _loop(self) -> None:
         while self._running:
+            # Teleop override (#24): panel owns drive commands; loop idles.
+            if self._teleop_active:
+                await self._teleop_tick()
+                await asyncio.sleep(0.05)
+                continue
+
             img = await self.relay.capture_frame()
             if img is None:
                 logger.warning("Frame capture failed; retrying")
                 await asyncio.sleep(self.config.vlm_interval_s)
                 continue
 
+            self._latest_frame = img
+            self._emit_frame(img)
+
             loop = asyncio.get_event_loop()
             prompt = self._build_prompt()
+            t0 = time.time()
             decision = await loop.run_in_executor(None, self._vlm_client.query, img, prompt)
+            latency_ms = (time.time() - t0) * 1000
             if decision is None:
                 logger.warning("VLM returned None; stopping for a cycle")
                 await asyncio.sleep(self.config.vlm_interval_s)
@@ -166,16 +218,21 @@ class RvrAgent:
                         decision.drive_distance_m, decision.target_location,
                         decision.reason[:80])
 
+            self._emit_decision(decision, latency_ms)
+
             confirmed = False
             if decision.target_visible and decision.target_location:
+                t0 = time.time()
                 verify = await loop.run_in_executor(
                     None, self._vlm_client.verify_candidate,
                     img, self.config.target, decision.target_location
                 )
+                v_latency_ms = (time.time() - t0) * 1000
                 if verify:
                     confirmed = verify.confirmed
                     logger.info("VERIFY: confirmed=%s | %s",
                                 verify.confirmed, verify.reason[:80])
+                    self._emit_verifier(verify, v_latency_ms)
                     if confirmed:
                         self._confirmed_count += 1
                         if decision.drive_distance_m <= self.config.arrive_dist_m:
@@ -203,6 +260,7 @@ class RvrAgent:
             elif decision.heading == "right":
                 self._desired_heading += TURN_STEP_DEG
             self._desired_heading = self._norm_heading(self._desired_heading)
+            self._emit_state()
 
             await self._execute_drive(decision.drive_distance_m)
 
@@ -255,14 +313,40 @@ class RvrAgent:
             await self.relay.send(StopMessage(heading=self._desired_heading))
 
     def _on_imu(self, msg) -> None:
+        if self.on_imu_event:
+            self.on_imu_event({
+                "accel": list(msg.accel),
+                "gyro": list(msg.gyro),
+                "ts": msg.ts,
+            })
+        if not self._bump_enabled:
+            return
         event = self.bump_detector.feed(msg)
         if event:
             logger.info("Bump detected: mag=%.1f", event.magnitude)
             self._log_entry({"event": "bump", "magnitude": event.magnitude})
             self._bump_event = event
+            if self.on_bump_event:
+                self.on_bump_event({
+                    "magnitude": event.magnitude,
+                    "timestamp": event.timestamp,
+                })
 
     def _on_ble_state(self, msg) -> None:
         logger.info("BLE state: %s", msg.state)
+        if self.on_ble_event:
+            self.on_ble_event({"state": msg.state})
+        self._emit_state()
+
+    def _on_battery(self, msg) -> None:
+        logger.info("Battery: %d%%", msg.pct)
+        if self.on_battery_event:
+            self.on_battery_event({"pct": msg.pct})
+
+    def _on_frame(self, img: Image.Image) -> None:
+        """Relay push-mode frame callback (when phone streams continuously)."""
+        self._latest_frame = img
+        self._emit_frame(img)
 
     def _build_prompt(self) -> str:
         natural = self.config.target.replace("_", " ")
@@ -287,6 +371,191 @@ class RvrAgent:
     @staticmethod
     def _norm_heading(h: int) -> int:
         return (h % 360 + 360) % 360
+
+    # ── Panel command handlers (#24) ────────────────────────────────────
+
+    def set_teleop(self, active: bool) -> None:
+        """Enable/disable teleop override. When active, autonomous loop pauses."""
+        if active and not self._teleop_active:
+            self._teleop_lin = 0.0
+            self._teleop_turn = 0.0
+        self._teleop_active = active
+        if not active:
+            # Stop on handoff
+            asyncio.ensure_future(self.relay.send(StopMessage(heading=self._desired_heading)))
+        self._emit_state()
+
+    def teleop_drive(self, lin: float, turn: float) -> None:
+        """Set teleop velocities (normalized -1..1). lin=forward, turn=left."""
+        self._teleop_lin = max(-1.0, min(1.0, lin))
+        self._teleop_turn = max(-1.0, min(1.0, turn))
+        if not self._teleop_active:
+            self.set_teleop(True)
+
+    async def _teleop_tick(self) -> None:
+        """Called every loop iteration while in teleop; sends drive commands.
+
+        Bump detector stays armed: a bump triggers emergency stop + reverse
+        (same recovery as autonomous drive), then clears the teleop command.
+        """
+        if self._bump_event is not None:
+            await self._handle_bump_recovery()
+            self._teleop_lin = 0.0
+            self._teleop_turn = 0.0
+            return
+
+        lin = self._teleop_lin
+        turn = self._teleop_turn
+
+        speed = int(abs(lin) * self.config.drive_speed_byte)
+        # Turn adjusts desired heading; drive command uses the new heading.
+        if turn != 0.0:
+            self._desired_heading = self._norm_heading(
+                self._desired_heading + int(turn * TELEOP_TURN_RATE_DEG)
+            )
+
+        if abs(lin) < 0.05 and abs(turn) < 0.05:
+            await self.relay.send(StopMessage(heading=self._desired_heading))
+            return
+
+        flags = DRIVE_FLAGS_REVERSE if lin < 0 else DRIVE_FLAGS_FORWARD
+        await self.relay.send(DriveMessage(
+            speed=max(speed, 1),
+            heading=self._desired_heading,
+            flags=flags,
+        ))
+
+    async def _handle_bump_recovery(self) -> None:
+        """Emergency stop + reverse + turn, shared by teleop and autonomous."""
+        logger.info("Bump during teleop — emergency stop")
+        await self.relay.send(StopMessage(heading=self._desired_heading))
+        await self.relay.send(DriveMessage(
+            speed=self.config.drive_speed_byte // 2,
+            heading=self._desired_heading,
+            flags=DRIVE_FLAGS_REVERSE,
+        ))
+        await asyncio.sleep(BUMP_REVERSE_MS / 1000.0)
+        await self.relay.send(StopMessage(heading=self._desired_heading))
+        self._desired_heading = self._norm_heading(self._desired_heading + BUMP_TURN_DEG)
+        self._bump_event = None
+
+    async def manual_stop(self) -> None:
+        """Emergency stop — halt motors immediately. Stays in teleop mode."""
+        self._teleop_lin = 0.0
+        self._teleop_turn = 0.0
+        await self.relay.send(StopMessage(heading=self._desired_heading))
+        self._emit_state()
+
+    async def manual_query(self) -> None:
+        """Stop, capture frame, run VLM decision + verifier, emit results.
+
+        Mirrors agent/debug_node._manual_query for RVR parity. Does NOT drive.
+        """
+        if self._vlm_client is None:
+            logger.warning("VLM client not ready; cannot run manual query")
+            return
+
+        img = await self.relay.capture_frame()
+        if img is None:
+            logger.warning("Manual query: frame capture failed")
+            return
+        self._latest_frame = img
+        self._emit_frame(img)
+
+        loop = asyncio.get_event_loop()
+        prompt = self._build_prompt()
+        t0 = time.time()
+        decision = await loop.run_in_executor(None, self._vlm_client.query, img, prompt)
+        latency_ms = (time.time() - t0) * 1000
+        if decision is None:
+            logger.warning("Manual query: VLM returned None")
+            return
+
+        logger.info("MANUAL VLM: vis=%s hdg=%s dist=%.2f loc=%s | %s",
+                    decision.target_visible, decision.heading,
+                    decision.drive_distance_m, decision.target_location,
+                    decision.reason[:80])
+        self._emit_decision(decision, latency_ms)
+
+        if decision.target_visible and decision.target_location:
+            t0 = time.time()
+            verify = await loop.run_in_executor(
+                None, self._vlm_client.verify_candidate,
+                img, self.config.target, decision.target_location
+            )
+            v_latency_ms = (time.time() - t0) * 1000
+            if verify:
+                self._emit_verifier(verify, v_latency_ms)
+                logger.info("MANUAL VERIFY: confirmed=%s | %s",
+                            verify.confirmed, verify.reason[:80])
+
+    def set_target(self, target: str, description: str = "") -> None:
+        self.config.target = target
+        self.config.target_description = description
+        self._confirmed_count = 0
+        self._emit_state()
+
+    def toggle(self, which: str, value: Optional[bool] = None) -> bool:
+        """Toggle a panel-controlled flag. Returns the new state."""
+        if which == "auto":
+            self._auto_mode = not self._auto_mode if value is None else value
+            new = self._auto_mode
+        elif which == "bump":
+            self._bump_enabled = not self._bump_enabled if value is None else value
+            new = self._bump_enabled
+        elif which == "teleop":
+            self.set_teleop(not self._teleop_active if value is None else value)
+            new = self._teleop_active
+        else:
+            return False
+        self._emit_state()
+        return new
+
+    # ── Panel event emitters (#24) ──────────────────────────────────────
+
+    def _emit_frame(self, img: Image.Image) -> None:
+        if self.on_frame:
+            self.on_frame(img)
+
+    def _emit_decision(self, decision, latency_ms: float) -> None:
+        if self.on_decision:
+            self.on_decision({
+                "target_visible": decision.target_visible,
+                "heading": decision.heading,
+                "drive_distance_m": decision.drive_distance_m,
+                "target_location": decision.target_location,
+                "reason": decision.reason,
+                "latency_ms": latency_ms,
+            })
+
+    def _emit_verifier(self, verify, latency_ms: float) -> None:
+        if self.on_verifier:
+            self.on_verifier({
+                "confirmed": verify.confirmed,
+                "matches": verify.matches,
+                "mismatches": verify.mismatches,
+                "reason": verify.reason,
+                "latency_ms": latency_ms,
+            })
+
+    def _emit_state(self) -> None:
+        if self.on_state_change:
+            self.on_state_change(self._state_snapshot())
+
+    def _state_snapshot(self) -> dict:
+        return {
+            "target": self.config.target,
+            "target_description": self.config.target_description,
+            "desired_heading": self._desired_heading,
+            "ble_state": self.relay.ble_state,
+            "phone_connected": self.relay.phone_connected,
+            "teleop_active": self._teleop_active,
+            "auto_mode": self._auto_mode,
+            "bump_enabled": self._bump_enabled,
+            "confirmed_count": self._confirmed_count,
+            "running": self._running,
+            "vlm_ready": self._vlm_client is not None,
+        }
 
     def _log_entry(self, entry: dict) -> None:
         if self._log_fh:

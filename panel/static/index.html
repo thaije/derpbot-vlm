@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DerpBot Panel</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Top bar ── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  min-height: 48px;
+  flex-shrink: 0;
+}
+.topbar .backend-chip {
+  background: var(--accent);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.topbar .target-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+}
+.topbar .timer {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.topbar .spacer { flex: 1; }
+.status-dots { display: flex; gap: 8px; align-items: center; }
+.status-dot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.dot.ok { background: var(--green); }
+.dot.warn { background: var(--yellow); }
+.dot.err { background: var(--red); }
+.estop {
+  background: var(--red);
+  color: #fff;
+  border: none;
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  transition: opacity 0.15s;
+}
+.estop:hover { opacity: 0.85; }
+.estop:active { transform: scale(0.97); }
+
+/* ── Main layout ── */
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+.cam-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  position: relative;
+  min-width: 0;
+}
+#camera {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.cam-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+.overlay-badge {
+  background: rgba(0,0,0,0.7);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--green);
+}
+.overlay-badge.warn { color: var(--yellow); }
+.overlay-badge.err { color: var(--red); }
+
+.side-pane {
+  width: 420px;
+  min-width: 300px;
+  max-width: 600px;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+@media (max-width: 1023px) {
+  .main { flex-direction: column; }
+  .side-pane {
+    width: 100%;
+    max-width: none;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    max-height: 45%;
+  }
+}
+
+/* ── Tabs ── */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tab {
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-dim);
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ── Decision tab ── */
+.decision-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.decision-card .label {
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.decision-card .value {
+  color: var(--text);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.decision-card .value.vis-true { color: var(--green); }
+.decision-card .value.vis-false { color: var(--text-dim); }
+.decision-card .latency { color: var(--text-dim); font-size: 11px; }
+.decision-card .reason {
+  color: var(--text-dim);
+  margin-top: 6px;
+  font-style: italic;
+}
+.verifier-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.verifier-card.confirmed { border-color: var(--green); }
+.verifier-card.rejected { border-color: var(--red); }
+
+/* ── Log tab ── */
+#log-area {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+#log-area .log-line { padding: 1px 0; }
+#log-area .log-line .ts { color: var(--text-dim); opacity: 0.6; }
+#log-area .log-line.info { color: var(--text); }
+#log-area .log-line.warn { color: var(--yellow); }
+#log-area .log-line.error { color: var(--red); }
+
+/* ── Control strip ── */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  min-height: 56px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.joystick-area {
+  width: 80px;
+  height: 80px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  position: relative;
+  touch-action: none;
+  cursor: crosshair;
+  flex-shrink: 0;
+}
+.joystick-knob {
+  width: 24px;
+  height: 24px;
+  background: var(--accent);
+  border-radius: 50%;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.kbd-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+.kbd-hints kbd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+  color: var(--text);
+}
+.control-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.control-btn:hover { border-color: var(--accent); }
+.control-btn:active { transform: scale(0.96); }
+.control-btn.stop-btn {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+  font-weight: 600;
+}
+.toggle-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.toggle-pill input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.target-input {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.target-input input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  width: 160px;
+}
+.rvr-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+/* ── Misc ── */
+.conn-status {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bg);
+}
+.conn-status.connected { color: var(--green); }
+.conn-status.disconnected { color: var(--red); }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="backend-chip" id="backend-chip">—</span>
+  <span class="target-name" id="target-name">target: —</span>
+  <span class="timer" id="timer">00:00</span>
+  <span class="spacer"></span>
+  <div class="status-dots" id="status-dots">
+    <span class="status-dot"><span class="dot" id="dot-ws"></span>WS</span>
+    <span class="status-dot"><span class="dot" id="dot-ble"></span>BLE</span>
+    <span class="status-dot"><span class="dot" id="dot-batt"></span>BAT</span>
+  </div>
+  <button class="estop" id="estop-btn" title="Emergency Stop (Space)">E-STOP</button>
+</div>
+
+<div class="main">
+  <div class="cam-pane">
+    <img id="camera" alt="camera feed" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='480'%3E%3C/svg%3E">
+    <div class="cam-overlay" id="cam-overlay"></div>
+  </div>
+
+  <div class="side-pane">
+    <div class="tabs">
+      <div class="tab active" data-tab="decision">Decision</div>
+      <div class="tab" data-tab="log">Log</div>
+    </div>
+    <div class="tab-content" id="tab-decision">
+      <div id="decision-container">
+        <div class="decision-card">
+          <div class="label">Waiting for first VLM query...</div>
+        </div>
+      </div>
+      <div id="verifier-container"></div>
+    </div>
+    <div class="tab-content" id="tab-log" style="display:none">
+      <div id="log-area"></div>
+    </div>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="joystick-area" id="joystick">
+    <div class="joystick-knob" id="joystick-knob"></div>
+  </div>
+  <div class="kbd-hints">
+    <div><kbd>W</kbd>/<kbd>S</kbd> fwd/rev &nbsp; <kbd>A</kbd>/<kbd>D</kbd> turn</div>
+    <div><kbd>Space</kbd> stop &nbsp; <kbd>V</kbd> query &nbsp; <kbd>Q</kbd> quit teleop</div>
+  </div>
+  <button class="control-btn stop-btn" id="stop-btn">STOP</button>
+  <button class="control-btn" id="query-btn">Manual Query <kbd>v</kbd></button>
+  <label class="toggle-pill"><input type="checkbox" id="toggle-teleop"> Teleop</label>
+  <label class="toggle-pill"><input type="checkbox" id="toggle-bump" checked> Bump</label>
+  <label class="toggle-pill"><input type="checkbox" id="toggle-auto"> Auto</label>
+  <div class="target-input">
+    <input type="text" id="target-input" placeholder="target object" spellcheck="false">
+    <button class="control-btn" id="set-target-btn">Set</button>
+  </div>
+  <div class="rvr-buttons">
+    <button class="control-btn" id="wake-btn">Wake</button>
+    <button class="control-btn" id="sleep-btn">Sleep</button>
+    <button class="control-btn" id="reset-yaw-btn">Reset Yaw</button>
+  </div>
+  <span class="conn-status disconnected" id="bus-status">bus: —</span>
+</div>
+
+<script>
+// ── WebSocket connection ──────────────────────────────────────────
+// WS_PORT is injected by the panel proxy server when serving this file.
+const WS_PORT = window.__WS_PORT__ || location.port || '8080';
+const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const wsHost = location.hostname || '127.0.0.1';
+const wsUrl = `${wsProtocol}//${wsHost}:${WS_PORT}/`;
+let ws = null;
+let wsConnected = false;
+let busConnected = false;
+let startTime = null;
+const logEntries = [];
+const MAX_LOG = 500;
+
+function connectWS() {
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    wsConnected = true;
+    updateStatusDots();
+    addLog('info', 'Panel WebSocket connected');
+  };
+
+  ws.onclose = () => {
+    wsConnected = false;
+    updateStatusDots();
+    addLog('warn', 'Panel WebSocket disconnected; reconnecting in 2s');
+    setTimeout(connectWS, 2000);
+  };
+
+  ws.onerror = (e) => {
+    addLog('error', 'WebSocket error');
+  };
+
+  ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      // Binary JPEG frame (1-byte prefix)
+      const data = new Uint8Array(event.data);
+      if (data.length > 0 && data[0] === 0x01) {
+        const jpeg = data.slice(1);
+        const blob = new Blob([jpeg], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        const img = document.getElementById('camera');
+        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+        img.src = url;
+        if (!startTime) startTime = Date.now();
+      }
+      return;
+    }
+    // JSON message
+    try {
+      const msg = JSON.parse(event.data);
+      handleMessage(msg);
+    } catch (e) {
+      console.error('Parse error:', e);
+    }
+  };
+}
+
+// ── Message handlers ──────────────────────────────────────────────
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'hello':
+      document.getElementById('backend-chip').textContent = msg.backend || '?';
+      addLog('info', `Backend: ${msg.backend}, capabilities: ${(msg.capabilities||[]).join(', ')}`);
+      break;
+    case 'state':
+      updateState(msg);
+      break;
+    case 'decision':
+      updateDecision(msg);
+      break;
+    case 'verifier':
+      updateVerifier(msg);
+      break;
+    case 'imu':
+      // Could add an IMU mini-display; for now just note it
+      break;
+    case 'bump':
+      addLog('warn', `BUMP detected! mag=${msg.magnitude?.toFixed(1)}`);
+      flashOverlay('BUMP!', 'err');
+      break;
+    case 'ble':
+      updateBLE(msg.state);
+      addLog('info', `BLE: ${msg.state}`);
+      break;
+    case 'battery':
+      updateBattery(msg.pct);
+      break;
+    case 'log':
+      addLog(msg.level || 'info', msg.msg);
+      break;
+    case 'pong':
+      break;
+    case 'toggle_ack':
+      addLog('info', `Toggle ${msg.which} = ${msg.value}`);
+      break;
+  }
+}
+
+// ── State update ───────────────────────────────────────────────────
+function updateState(msg) {
+  if (msg.target) document.getElementById('target-name').textContent = `target: ${msg.target}`;
+  if (msg.target !== undefined) {
+    document.getElementById('target-input').value = msg.target || '';
+  }
+  updateBLE(msg.ble_state);
+  updateBattery(msg.battery_pct);
+  document.getElementById('dot-ws').className = msg.phone_connected ? 'dot ok' : 'dot err';
+  document.getElementById('toggle-teleop').checked = msg.teleop_active || false;
+  document.getElementById('toggle-bump').checked = msg.bump_enabled !== false;
+  document.getElementById('toggle-auto').checked = msg.auto_mode || false;
+  busConnected = msg.phone_connected;
+  document.getElementById('bus-status').textContent = busConnected ? 'bus: connected' : 'bus: —';
+  document.getElementById('bus-status').className = busConnected ? 'conn-status connected' : 'conn-status disconnected';
+}
+
+function updateBLE(state) {
+  const dot = document.getElementById('dot-ble');
+  if (state === 'ready') dot.className = 'dot ok';
+  else if (state && state !== 'disconnected') dot.className = 'dot warn';
+  else dot.className = 'dot err';
+}
+
+function updateBattery(pct) {
+  if (pct === undefined || pct === null) return;
+  const dot = document.getElementById('dot-batt');
+  if (pct > 30) dot.className = 'dot ok';
+  else if (pct > 10) dot.className = 'dot warn';
+  else dot.className = 'dot err';
+  document.querySelector('#status-dots .status-dot:last-child').innerHTML = `<span class="dot ${pct>30?'ok':pct>10?'warn':'err'}"></span>BAT ${pct}%`;
+}
+
+// ── Decision display ──────────────────────────────────────────────
+function updateDecision(msg) {
+  const container = document.getElementById('decision-container');
+  const visClass = msg.target_visible ? 'vis-true' : 'vis-false';
+  const visText = msg.target_visible ? 'YES' : 'no';
+  const lat = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
+
+  container.innerHTML = `
+    <div class="decision-card">
+      <div class="label">Target Visible</div>
+      <div class="value ${visClass}">${visText}</div>
+      <div class="label" style="margin-top:6px">Heading</div>
+      <div class="value">${msg.heading || '—'}</div>
+      <div class="label" style="margin-top:6px">Drive Distance</div>
+      <div class="value">${msg.drive_distance_m !== undefined ? msg.drive_distance_m.toFixed(2) + ' m' : '—'}</div>
+      <div class="label" style="margin-top:6px">Location</div>
+      <div class="value">${msg.target_location || '—'}</div>
+      ${lat ? `<div class="latency" style="margin-top:4px">⏱ ${lat}</div>` : ''}
+      ${msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''}
+    </div>
+  `;
+
+  // Update camera overlay
+  if (msg.target_visible && msg.target_location) {
+    flashOverlay(`📍 ${msg.target_location}`, '');
+  } else if (msg.heading) {
+    const arrow = msg.heading === 'left' ? '◀' : msg.heading === 'right' ? '▶' : '▲';
+    flashOverlay(`${arrow} ${msg.heading}`, 'warn');
+  }
+}
+
+function updateVerifier(msg) {
+  const container = document.getElementById('verifier-container');
+  const cls = msg.confirmed ? 'confirmed' : 'rejected';
+  const verdict = msg.confirmed ? 'CONFIRMED' : 'REJECTED';
+  const lat = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
+
+  let matchesHtml = '';
+  if (msg.matches && msg.matches.length) {
+    matchesHtml += `<div class="value" style="color:var(--green)">✓ ${escapeHtml(msg.matches.join(', '))}</div>`;
+  }
+  if (msg.mismatches && msg.mismatches.length) {
+    matchesHtml += `<div class="value" style="color:var(--red)">✗ ${escapeHtml(msg.mismatches.join(', '))}</div>`;
+  }
+
+  container.innerHTML = `
+    <div class="verifier-card ${cls}">
+      <div class="label">Verifier</div>
+      <div class="value" style="color:${msg.confirmed?'var(--green)':'var(--red)'}">${verdict}</div>
+      ${lat ? `<div class="latency">⏱ ${lat}</div>` : ''}
+      ${matchesHtml}
+      ${msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''}
+    </div>
+  `;
+}
+
+// ── Camera overlay ────────────────────────────────────────────────
+let overlayTimeout = null;
+function flashOverlay(text, cls) {
+  const overlay = document.getElementById('cam-overlay');
+  overlay.innerHTML = `<div class="overlay-badge ${cls}">${escapeHtml(text)}</div>`;
+  if (overlayTimeout) clearTimeout(overlayTimeout);
+  overlayTimeout = setTimeout(() => {
+    overlay.innerHTML = '';
+  }, 5000);
+}
+
+// ── Log ───────────────────────────────────────────────────────────
+function addLog(level, msg) {
+  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+  logEntries.push({ level, msg, ts });
+  if (logEntries.length > MAX_LOG) logEntries.shift();
+  renderLog();
+}
+
+function renderLog() {
+  const area = document.getElementById('log-area');
+  area.innerHTML = logEntries.map(e =>
+    `<div class="log-line ${e.level}"><span class="ts">[${e.ts}]</span> ${escapeHtml(e.msg)}</div>`
+  ).join('');
+  area.scrollTop = area.scrollHeight;
+}
+
+// ── Status dots ───────────────────────────────────────────────────
+function updateStatusDots() {
+  const dot = document.getElementById('dot-ws');
+  dot.className = wsConnected ? 'dot ok' : 'dot err';
+}
+
+// ── Timer ─────────────────────────────────────────────────────────
+setInterval(() => {
+  if (!startTime) return;
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  document.getElementById('timer').textContent = `${m}:${s}`;
+}, 1000);
+
+// ── Send commands ─────────────────────────────────────────────────
+function sendCmd(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+  }
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+    document.getElementById(`tab-${tab.dataset.tab}`).style.display = '';
+  });
+});
+
+// ── E-STOP ────────────────────────────────────────────────────────
+function emergencyStop() {
+  sendCmd({ type: 'stop' });
+  document.getElementById('toggle-teleop').checked = false;
+  addLog('warn', 'E-STOP sent');
+}
+document.getElementById('estop-btn').addEventListener('click', emergencyStop);
+document.getElementById('stop-btn').addEventListener('click', emergencyStop);
+
+// ── Manual query ──────────────────────────────────────────────────
+document.getElementById('query-btn').addEventListener('click', () => {
+  sendCmd({ type: 'manual_query' });
+  addLog('info', 'Manual query sent');
+});
+
+// ── Toggles ───────────────────────────────────────────────────────
+document.getElementById('toggle-teleop').addEventListener('change', (e) => {
+  sendCmd({ type: 'toggle', which: 'teleop', value: e.target.checked });
+});
+document.getElementById('toggle-bump').addEventListener('change', (e) => {
+  sendCmd({ type: 'toggle', which: 'bump', value: e.target.checked });
+});
+document.getElementById('toggle-auto').addEventListener('change', (e) => {
+  sendCmd({ type: 'toggle', which: 'auto', value: e.target.checked });
+});
+
+// ── Set target ────────────────────────────────────────────────────
+document.getElementById('set-target-btn').addEventListener('click', () => {
+  const target = document.getElementById('target-input').value.trim();
+  if (target) {
+    sendCmd({ type: 'set_target', target });
+    addLog('info', `Target set: ${target}`);
+  }
+});
+document.getElementById('target-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('set-target-btn').click();
+});
+
+// ── RVR buttons ───────────────────────────────────────────────────
+document.getElementById('wake-btn').addEventListener('click', () => sendCmd({ type: 'rvr', cmd: 'wake' }));
+document.getElementById('sleep-btn').addEventListener('click', () => sendCmd({ type: 'rvr', cmd: 'sleep' }));
+document.getElementById('reset-yaw-btn').addEventListener('click', () => sendCmd({ type: 'rvr', cmd: 'reset_yaw' }));
+
+// ── Joystick ──────────────────────────────────────────────────────
+const joystick = document.getElementById('joystick');
+const knob = document.getElementById('joystick-knob');
+let joystickActive = false;
+
+function joystickMove(e) {
+  if (!joystickActive) return;
+  const rect = joystick.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  let dx = (e.clientX - cx) / (rect.width / 2);
+  let dy = (e.clientY - cy) / (rect.height / 2);
+  dx = Math.max(-1, Math.min(1, dx));
+  dy = Math.max(-1, Math.min(1, dy));
+  knob.style.left = `${50 + dx * 35}%`;
+  knob.style.top = `${50 + dy * 35}%`;
+  // x = turn (right = +), y = forward (+ = up on screen = -dy)
+  sendTeleop(dx, -dy);
+}
+
+function joystickEnd() {
+  if (!joystickActive) return;
+  joystickActive = false;
+  knob.style.left = '50%';
+  knob.style.top = '50%';
+  sendTeleop(0, 0);
+}
+
+joystick.addEventListener('touchstart', (e) => { e.preventDefault(); joystickActive = true; });
+joystick.addEventListener('touchmove', (e) => { e.preventDefault(); joystickMove(e.touches[0]); });
+joystick.addEventListener('touchend', joystickEnd);
+joystick.addEventListener('mousedown', (e) => { joystickActive = true; joystickMove(e); });
+document.addEventListener('mousemove', joystickMove);
+document.addEventListener('mouseup', joystickEnd);
+
+function sendTeleop(x, y) {
+  sendCmd({ type: 'teleop', x, y });
+}
+
+// ── Keyboard ─────────────────────────────────────────────────────
+const keys = {};
+let teleopLin = 0, teleopTurn = 0;
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  const key = e.key.toLowerCase();
+  if (keys[key]) return;
+  keys[key] = true;
+
+  if (key === ' ') { emergencyStop(); return; }
+  if (key === 'v') { sendCmd({ type: 'manual_query' }); addLog('info','Manual query sent'); return; }
+  if (key === 'q') { sendCmd({ type: 'toggle', which: 'teleop', value: false }); return; }
+
+  updateKeyboardTeleop();
+});
+
+document.addEventListener('keyup', (e) => {
+  const key = e.key.toLowerCase();
+  keys[key] = false;
+  updateKeyboardTeleop();
+});
+
+function updateKeyboardTeleop() {
+  let lin = 0, turn = 0;
+  if (keys['w']) lin += 1;
+  if (keys['s']) lin -= 1;
+  if (keys['a']) turn -= 1;
+  if (keys['d']) turn += 1;
+
+  if (lin !== teleopLin || turn !== teleopTurn) {
+    teleopLin = lin;
+    teleopTurn = turn;
+    if (lin !== 0 || turn !== 0) {
+      // Enable teleop if any movement key is pressed
+      const checkbox = document.getElementById('toggle-teleop');
+      if (!checkbox.checked) {
+        checkbox.checked = true;
+        sendCmd({ type: 'toggle', which: 'teleop', value: true });
+      }
+    }
+    sendTeleop(turn, lin);
+  }
+}
+
+// ── Heartbeat ─────────────────────────────────────────────────────
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    sendCmd({ type: 'ping' });
+  }
+}, 30);
+
+// ── Utils ─────────────────────────────────────────────────────────
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+connectWS();
+addLog('info', 'DerpBot panel initialised — waiting for agent...');
+</script>
+</body>
+</html>

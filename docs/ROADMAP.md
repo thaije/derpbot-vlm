@@ -36,6 +36,7 @@ failure modes transfer to real world. Builds on #21 (closed).
 Titles only. Expand when a task is promoted to "Next".
 
 - **VLM tool calling** — Define `navigate()` and `report_detection()` as Ollama tools; model decides when to call each. Replaces `target_visible` boolean field with separate detection tool call. Lets VLM report detections independently of navigation actions.
+- **Command panel** · [#24](https://github.com/thaije/derpbot-vlm/issues/24) — Web UI for debug observation + teleop. Separate process (`python3.12 -m panel`) connects to agent debug bus. RVR backend done; sim backend + #23 feedback buttons follow.
 - **Benchmark submission** · [#4](https://github.com/thaije/derpbot-vlm/issues/4) — `validate_submission.py` + result JSONs.
 - **Medium/hard tier scenarios** · [#5](https://github.com/thaije/derpbot-vlm/issues/5) — once easy ≥ 3/5.
 - **Qwen-RobotNav eval** · [#22](https://github.com/thaije/derpbot-vlm/issues/22) — VLA foundation model (Qwen3-VL-based, 5 nav domains SOTA) as detection/nav backbone. Path A: drop-in perception swap vs `gemma4:31b-cloud`. Path B: full VLA action replacement (safety-gated). **Blocked on public weights/API release** — non-actionable until then; promote to "Next" when unblocked.
