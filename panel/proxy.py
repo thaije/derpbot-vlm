@@ -55,6 +55,8 @@ class PanelProxy:
         self._last_state: dict = {}
         self._last_decision: Optional[dict] = None
         self._last_verifier: Optional[dict] = None
+        self._last_battery: Optional[dict] = None
+        self._last_ble: Optional[dict] = None
         self._ws_server: Optional[websockets.asyncio.server.Server] = None
         self._http_server: Optional[HTTPServer] = None
         self._running = False
@@ -118,7 +120,7 @@ class PanelProxy:
                         self.end_headers()
                         self.wfile.write(body)
                         return
-                super().do_GET(self)
+                super().do_GET()
 
         server = HTTPServer((self.http_host, self.static_port), Handler)
         loop = asyncio.get_event_loop()
@@ -140,6 +142,7 @@ class PanelProxy:
                     logger.info("Connected to agent debug bus")
                     await ws.send(json.dumps({"type": "get_state"}))
                     await ws.send(json.dumps({"type": "get_frame"}))
+                    await ws.send(json.dumps({"type": "rvr", "cmd": "get_battery"}))
                     async for raw in ws:
                         await self._on_bus_message(raw)
             except (OSError, websockets.ConnectionClosed) as e:
@@ -172,6 +175,10 @@ class PanelProxy:
             self._last_decision = {k: v for k, v in msg.items() if k != "type"}
         elif mtype == "verifier":
             self._last_verifier = {k: v for k, v in msg.items() if k != "type"}
+        elif mtype == "battery":
+            self._last_battery = {k: v for k, v in msg.items() if k != "type"}
+        elif mtype == "ble":
+            self._last_ble = {k: v for k, v in msg.items() if k != "type"}
 
         await self._broadcast_json(msg)
 
@@ -191,6 +198,10 @@ class PanelProxy:
         try:
             if self._last_state:
                 await ws.send(json.dumps({"type": "state", **self._last_state}))
+            if self._last_ble:
+                await ws.send(json.dumps({"type": "ble", **self._last_ble}))
+            if self._last_battery:
+                await ws.send(json.dumps({"type": "battery", **self._last_battery}))
             if self._last_decision:
                 await ws.send(json.dumps({"type": "decision", **self._last_decision}))
             if self._last_verifier:

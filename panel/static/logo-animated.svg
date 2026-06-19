@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 360" width="360" height="360" role="img" aria-label="derpbot logo - body swap">
+<style>
+.rvO{animation:rvO 10s ease-in-out infinite}
+.rvS{transform-box:view-box;transform-origin:180px 225px;animation:rvS 10s ease-in-out infinite}
+.dgO{animation:dgO 10s ease-in-out infinite}
+.dgS{transform-box:view-box;transform-origin:180px 190px;animation:dgS 10s ease-in-out infinite}
+.hvO{animation:hvO 10s ease-in-out infinite}
+.hvS{transform-box:view-box;transform-origin:180px 180px;animation:hvS 10s ease-in-out infinite}
+.efl{animation:efl 10s ease-in-out infinite}
+.ebk{transform-box:view-box;transform-origin:180px 150px;animation:ebk 10s ease-in-out infinite}
+.epx{animation:epx 10s ease-in-out infinite}
+.trk{animation:trk .7s linear infinite}
+.legA{animation:legA .6s ease-in-out infinite}
+.legB{animation:legB .6s ease-in-out infinite}
+.dogBob{animation:dogBob .6s ease-in-out infinite}
+.shdwP{transform-box:view-box;transform-origin:180px 308px;animation:shdwP 10s ease-in-out infinite}
+.jet{transform-box:fill-box;transform-origin:center;animation:jet 1s ease-in-out infinite}
+.jet2{transform-box:fill-box;transform-origin:center;animation:jet 1s ease-in-out -.3s infinite}
+@keyframes ebk{0%,11%{transform:scaleY(1)}12.5%{transform:scaleY(.06)}14%,23%{transform:scaleY(1)}25%{transform:scaleY(.06)}27%,48%{transform:scaleY(1)}49.5%{transform:scaleY(.06)}51%,61%{transform:scaleY(1)}62.5%{transform:scaleY(.06)}64%,73%{transform:scaleY(1)}75%{transform:scaleY(.06)}77%,100%{transform:scaleY(1)}}
+@keyframes epx{0%{transform:translateX(0)}9%{transform:translateX(-11px)}19%{transform:translateX(11px)}30%{transform:translateX(0)}40%{transform:translateX(-9px)}50%{transform:translateX(9px)}60%{transform:translateX(-6px)}70%{transform:translateX(8px)}80%{transform:translateX(-11px)}90%{transform:translateX(9px)}100%{transform:translateX(0)}}
+@keyframes efl{0%,49%{transform:translateY(0)}55%{transform:translateY(-6px)}62%{transform:translateY(2px)}69%{transform:translateY(-6px)}76%,100%{transform:translateY(0)}}
+@keyframes rvO{0%,24%{opacity:1}26%{opacity:0}74%{opacity:0}76%{opacity:1}100%{opacity:1}}
+@keyframes rvS{0%,24%{transform:scale(1)}26%{transform:scale(.85)}74%{transform:scale(.85)}76%{transform:scale(1)}100%{transform:scale(1)}}
+@keyframes dgO{0%,24%{opacity:0}26%{opacity:1}49%{opacity:1}51%{opacity:0}100%{opacity:0}}
+@keyframes dgS{0%,24%{transform:scale(.85)}26%{transform:scale(1)}49%{transform:scale(1)}51%{transform:scale(.85)}100%{transform:scale(.85)}}
+@keyframes hvO{0%,49%{opacity:0}51%{opacity:1}74%{opacity:1}76%{opacity:0}100%{opacity:0}}
+@keyframes hvS{0%,49%{transform:scale(.85)}51%{transform:scale(1)}74%{transform:scale(1)}76%{transform:scale(.85)}100%{transform:scale(.85)}}
+@keyframes trk{0%{transform:translateY(0)}100%{transform:translateY(-18px)}}
+@keyframes legA{0%{transform:translateY(0)}25%{transform:translateY(-10px)}50%,100%{transform:translateY(0)}}
+@keyframes legB{0%,50%{transform:translateY(0)}75%{transform:translateY(-10px)}100%{transform:translateY(0)}}
+@keyframes dogBob{0%{transform:translateY(0)}25%{transform:translateY(-2px)}50%{transform:translateY(0)}75%{transform:translateY(-2px)}100%{transform:translateY(0)}}
+@keyframes shdwP{0%,49%{transform:scaleX(1);opacity:.18}55%{transform:scaleX(.82);opacity:.12}62%{transform:scaleX(.92);opacity:.15}69%{transform:scaleX(.82);opacity:.12}76%,100%{transform:scaleX(1);opacity:.18}}
+@keyframes jet{0%,100%{opacity:.15;transform:translateY(0) scaleY(1)}50%{opacity:.45;transform:translateY(4px) scaleY(1.4)}}</style>
+<defs>
+<clipPath id="tl"><rect x="66" y="170" width="40" height="120" rx="16"/></clipPath>
+<clipPath id="tr"><rect x="254" y="170" width="40" height="120" rx="16"/></clipPath>
+</defs>
+
+<!-- RVR -->
+<g class="rvO"><g class="rvS">
+<ellipse cx="180" cy="298" rx="90" ry="10" fill="#2d2a24" opacity="0.15"/>
+<rect x="66" y="170" width="40" height="120" rx="16" fill="#2d2a24"/>
+<g clip-path="url(#tl)"><g class="trk"><rect x="70" y="158" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="176" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="194" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="212" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="230" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="248" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="266" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="284" width="32" height="6" rx="3" fill="#5b554c"/><rect x="70" y="302" width="32" height="6" rx="3" fill="#5b554c"/></g></g>
+<rect x="254" y="170" width="40" height="120" rx="16" fill="#2d2a24"/>
+<g clip-path="url(#tr)"><g class="trk"><rect x="258" y="158" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="176" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="194" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="212" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="230" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="248" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="266" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="284" width="32" height="6" rx="3" fill="#5b554c"/><rect x="258" y="302" width="32" height="6" rx="3" fill="#5b554c"/></g></g>
+<rect x="103" y="168" width="154" height="120" rx="24" fill="#fff" stroke="#2d2a24" stroke-width="7"/>
+<rect x="140" y="236" width="80" height="6" rx="3" fill="#2d2a24" opacity="0.5"/>
+<rect x="140" y="250" width="80" height="6" rx="3" fill="#2d2a24" opacity="0.3"/>
+</g></g>
+
+<!-- DOG -->
+<g class="dgO"><g class="dgS">
+<ellipse cx="180" cy="305" rx="85" ry="9" fill="#2d2a24" opacity="0.15"/>
+<g class="legA">
+<rect x="124" y="238" width="20" height="64" rx="10" fill="#9a9690" stroke="#2d2a24" stroke-width="6"/>
+<rect x="216" y="238" width="20" height="64" rx="10" fill="#9a9690" stroke="#2d2a24" stroke-width="6"/>
+</g>
+<g class="legB">
+<rect x="158" y="240" width="18" height="60" rx="9" fill="#8b877f" stroke="#2d2a24" stroke-width="6"/>
+<rect x="184" y="240" width="18" height="60" rx="9" fill="#8b877f" stroke="#2d2a24" stroke-width="6"/>
+</g>
+<g class="dogBob">
+<rect x="118" y="74" width="34" height="50" rx="14" fill="#9a9690" stroke="#2d2a24" stroke-width="6" transform="rotate(-18 135 99)"/>
+<rect x="208" y="74" width="34" height="50" rx="14" fill="#9a9690" stroke="#2d2a24" stroke-width="6" transform="rotate(18 225 99)"/>
+<rect x="110" y="96" width="140" height="152" rx="34" fill="#9a9690" stroke="#2d2a24" stroke-width="7"/>
+<rect x="150" y="188" width="60" height="48" rx="20" fill="#efe7d6" stroke="#2d2a24" stroke-width="5"/>
+<rect x="171" y="196" width="18" height="13" rx="6" fill="#2d2a24"/>
+<rect x="178" y="209" width="4" height="15" rx="2" fill="#2d2a24"/>
+</g>
+</g></g>
+
+<!-- HOVER -->
+<g class="hvO"><g class="hvS">
+<ellipse class="shdwP" cx="180" cy="308" rx="80" ry="10" fill="#2d2a24" opacity="0.18"/>
+<g class="efl">
+<rect x="86" y="170" width="30" height="46" rx="15" fill="#fff" stroke="#2d2a24" stroke-width="6"/>
+<rect x="244" y="170" width="30" height="46" rx="15" fill="#fff" stroke="#2d2a24" stroke-width="6"/>
+<rect x="122" y="94" width="116" height="152" rx="58" ry="70" fill="#fff" stroke="#2d2a24" stroke-width="7"/>
+<rect x="168" y="208" width="24" height="8" rx="4" fill="#e07a4f"/>
+<circle class="jet" cx="164" cy="258" r="4.5" fill="#e07a4f"/>
+<circle class="jet2" cx="196" cy="258" r="4.5" fill="#e07a4f"/>
+</g>
+</g></g>
+
+<!-- EYE (constant) -->
+<g class="efl">
+<circle cx="180" cy="150" r="48" fill="#fff" stroke="#2d2a24" stroke-width="7"/>
+<g class="ebk">
+<circle cx="180" cy="150" r="28" fill="#e07a4f"/>
+<g class="epx">
+<circle cx="180" cy="150" r="14" fill="#2d2a24"/>
+<circle cx="190" cy="140" r="4.5" fill="#fff" opacity="0.9"/>
+</g>
+</g>
+</g>
+</svg>

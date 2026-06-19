@@ -30,6 +30,7 @@ body {
 
 /* ── Top bar ── */
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -39,6 +40,29 @@ body {
   min-height: 48px;
   flex-shrink: 0;
 }
+.panel-logo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 72px;
+  height: 72px;
+  padding: 8px;
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  z-index: 5;
+}
+.panel-logo img {
+  position: absolute;
+  inset: 8px;
+  width: calc(100% - 16px);
+  height: calc(100% - 16px);
+  transition: opacity .15s ease;
+}
+.panel-logo .logo-animated { opacity: 0; }
+.panel-logo:hover .logo-static { opacity: 0; }
+.panel-logo:hover .logo-animated { opacity: 1; }
 .topbar .backend-chip {
   background: var(--accent);
   color: #fff;
@@ -75,6 +99,52 @@ body {
 .dot.ok { background: var(--green); }
 .dot.warn { background: var(--yellow); }
 .dot.err { background: var(--red); }
+
+/* Battery icon */
+.battery {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+}
+.battery-icon {
+  position: relative;
+  width: 22px;
+  height: 11px;
+  border: 1.5px solid var(--text-dim);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.battery-icon::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  top: 3px;
+  width: 2px;
+  height: 5px;
+  background: var(--text-dim);
+  border-radius: 0 1px 1px 0;
+}
+.battery-fill {
+  position: absolute;
+  left: 1px;
+  top: 1px;
+  bottom: 1px;
+  border-radius: 1px;
+  width: 0%;
+  transition: width 0.3s, background 0.3s;
+}
+.battery-fill.ok { background: var(--green); }
+.battery-fill.warn { background: var(--yellow); }
+.battery-fill.err { background: var(--red); }
+.battery-icon.ok { border-color: var(--green); }
+.battery-icon.ok::after { background: var(--green); }
+.battery-icon.warn { border-color: var(--yellow); }
+.battery-icon.warn::after { background: var(--yellow); }
+.battery-icon.err { border-color: var(--red); }
+.battery-icon.err::after { background: var(--red); }
 .estop {
   background: var(--red);
   color: #fff;
@@ -350,6 +420,10 @@ body {
 <body>
 
 <div class="topbar">
+  <span class="panel-logo">
+    <img class="logo-static" src="logo.svg" alt="derpbot logo">
+    <img class="logo-animated" src="logo-animated.svg" alt="">
+  </span>
   <span class="backend-chip" id="backend-chip">—</span>
   <span class="target-name" id="target-name">target: —</span>
   <span class="timer" id="timer">00:00</span>
@@ -357,7 +431,10 @@ body {
   <div class="status-dots" id="status-dots">
     <span class="status-dot"><span class="dot" id="dot-ws"></span>WS</span>
     <span class="status-dot"><span class="dot" id="dot-ble"></span>BLE</span>
-    <span class="status-dot"><span class="dot" id="dot-batt"></span>BAT</span>
+    <span class="battery" id="battery-widget">
+      <span class="battery-icon" id="battery-icon"><span class="battery-fill" id="battery-fill"></span></span>
+      <span id="battery-pct">?</span>
+    </span>
   </div>
   <button class="estop" id="estop-btn" title="Emergency Stop (Space)">E-STOP</button>
 </div>
@@ -398,7 +475,7 @@ body {
   <button class="control-btn stop-btn" id="stop-btn">STOP</button>
   <button class="control-btn" id="query-btn">Manual Query <kbd>v</kbd></button>
   <label class="toggle-pill"><input type="checkbox" id="toggle-teleop"> Teleop</label>
-  <label class="toggle-pill"><input type="checkbox" id="toggle-bump" checked> Bump</label>
+  <label class="toggle-pill"><input type="checkbox" id="toggle-bump" checked> Stop on bump</label>
   <label class="toggle-pill"><input type="checkbox" id="toggle-auto"> Auto</label>
   <div class="target-input">
     <input type="text" id="target-input" placeholder="target object" spellcheck="false">
@@ -539,11 +616,14 @@ function updateBLE(state) {
 
 function updateBattery(pct) {
   if (pct === undefined || pct === null) return;
-  const dot = document.getElementById('dot-batt');
-  if (pct > 30) dot.className = 'dot ok';
-  else if (pct > 10) dot.className = 'dot warn';
-  else dot.className = 'dot err';
-  document.querySelector('#status-dots .status-dot:last-child').innerHTML = `<span class="dot ${pct>30?'ok':pct>10?'warn':'err'}"></span>BAT ${pct}%`;
+  const fill = document.getElementById('battery-fill');
+  const icon = document.getElementById('battery-icon');
+  const pctEl = document.getElementById('battery-pct');
+  const level = pct > 30 ? 'ok' : pct > 10 ? 'warn' : 'err';
+  fill.className = 'battery-fill ' + level;
+  fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  icon.className = 'battery-icon ' + level;
+  pctEl.textContent = pct + '%';
 }
 
 // ── Decision display ──────────────────────────────────────────────
