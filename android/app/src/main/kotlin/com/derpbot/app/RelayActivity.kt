@@ -65,9 +65,9 @@ class RelayActivity : AppCompatActivity(), RvrBleConnection.Listener {
         root.addView(status)
 
         serverInput = EditText(this).apply {
-            hint = "Server URL (e.g. ws://100.116.58.79:8765)"
+            hint = "Server URL (e.g. ws://192.168.2.20:8765)"
             inputType = InputType.TYPE_TEXT_VARIATION_URI
-            setText(prefs.getString("server_url", "ws://100.116.58.79:8765"))
+            setText(prefs.getString("server_url", "ws://192.168.2.20:8765"))
         }
         root.addView(serverInput)
 
