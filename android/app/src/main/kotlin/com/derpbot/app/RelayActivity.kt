@@ -9,6 +9,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -57,6 +58,16 @@ class RelayActivity : AppCompatActivity(), RvrBleConnection.Listener {
             orientation = LinearLayout.VERTICAL
             setPadding(40, 96, 40, 64)
         }
+
+        val logo = ImageView(this).apply {
+            setImageResource(android.R.drawable.ic_menu_camera)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            setPadding(0, 0, 0, 16)
+        }
+        root.addView(logo)
+
         status = TextView(this).apply {
             text = "derpbot relay — Idle"
             textSize = 16f
