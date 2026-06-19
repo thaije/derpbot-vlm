@@ -167,4 +167,11 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
   2. `cd android && ./deploy.sh [ws://<laptop-ip>:8765]` — builds APK, patches default server URL, installs over WiFi ADB, launches app.
   3. If `adb install` fails with signature mismatch: `adb uninstall com.derpbot.app` then redeploy.
   4. VPN caveat: NordVPN blocks inbound local traffic by default. Enable "Allow local network access" (or disable VPN) for phone↔laptop WebSocket.
-- **Android SDK** at `$HOME/Android` (cmdline-tools, platform-36, build-tools-36). JDK 21 required. `ANDROID_HOME` and `PATH` set in `deploy.sh`.
+  - **Android SDK** at `$HOME/Android` (cmdline-tools, platform-36, build-tools-36). JDK 21 required. `ANDROID_HOME` and `PATH` set in `deploy.sh`.
+- **Closed-loop dev (no phone interaction) · `rvr_bridge/drive_test.py`:**
+  - `python3.12 -m rvr_bridge.drive_test --duration 1.0` — restarts app via ADB, waits for BLE ready, drives, stops, sleeps. Zero phone touching.
+  - **`adb reverse tcp:8765 tcp:8765`** tunnels phone's `127.0.0.1:8765` → laptop's `127.0.0.1:8765` via the ADB connection. Works for the app process (launched by `am start`) even though `run-as <pkg> nc` can't access the tunnel. Direct WiFi TCP from OkHttp is unreliable on some networks (`ECONNABORTED`/`SocketTimeoutException` even though ping+nc work) — the ADB reverse tunnel sidesteps the phone's WiFi TCP stack entirely.
+  - **Server must bind to `::` (dual-stack), not `127.0.0.1`.** Android OkHttp connects via IPv6 `::1` through the adb reverse tunnel. A server on `127.0.0.1` (IPv4 only) won't accept the IPv6 connection. `::` accepts both.
+  - **`restart_app()` must run in `run_in_executor`**, not synchronously. Blocking the event loop with subprocess calls prevents the WS server from completing the handshake → OkHttp times out.
+  - **Samsung Freecess app-freezer** caches the activity moments after launch if the screen is off, killing the WebSocket before BLE reaches `ready`. The drive_test sets `screen_off_timeout` to max, wakes the screen (`KEYCODE_WAKEUP`), and dismisses the keyguard (`wm dismiss-keyguard`) before launching the app.
+  - **`server.py` `send()` uses `self._ws.state == WsState.OPEN`** (websockets v16 removed the `.closed` attribute; use `.state`).

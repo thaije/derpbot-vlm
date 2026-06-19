@@ -91,7 +91,7 @@ class PhoneRelay:
         logger.info("Phone relay stopped")
 
     async def send(self, msg) -> None:
-        if self._ws and not self._ws.closed:
+        if self._ws and self._ws.state == WsState.OPEN:
             await self._ws.send(encode(msg))
 
     async def capture_frame(self) -> Optional[Image.Image]:

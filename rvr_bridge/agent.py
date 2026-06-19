@@ -47,7 +47,7 @@ class BridgeConfig:
     api_key: Optional[str] = None
     target: str = "fire_extinguisher"
     target_description: str = ""
-    ws_host: str = "0.0.0.0"
+    ws_host: str = "::"  # dual-stack: adb reverse tunnel + OkHttp uses IPv6 ::1
     ws_port: int = 8765
     drive_speed_byte: int = DRIVE_SPEED_BYTE
     speed_mps: float = SPEED_MPS

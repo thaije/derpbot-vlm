@@ -7,6 +7,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.util.Base64
+import android.util.Log
 import com.derpbot.app.ble.RvrBleConnection
 import com.derpbot.app.camera.CameraManager
 import com.derpbot.rvr.protocol.RvrCommands
@@ -56,32 +57,38 @@ class RvrRelay(
 
     private suspend fun connect() {
         onEvent("Connecting to $serverUrl ...")
+        Log.i(TAG, "Connecting to $serverUrl ...")
         val request = Request.Builder().url(serverUrl).build()
         val wsListener = object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 connected = true
                 onEvent("WebSocket connected")
+                Log.i(TAG, "WebSocket connected")
                 scope.launch { startSensors() }
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
+                Log.d(TAG, "onMessage: ${text.take(80)}")
                 val cmd = decodeCommand(text) ?: return
                 handleCommand(cmd)
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                Log.i(TAG, "onClosing: $code $reason")
                 ws.close(code, reason)
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 connected = false
                 onEvent("WebSocket closed: $code $reason")
+                Log.i(TAG, "onClosed: $code $reason")
                 scheduleReconnect()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 connected = false
                 onEvent("WebSocket failure: ${t.message}")
+                Log.e(TAG, "onFailure: ${t.javaClass.simpleName}: ${t.message}", t)
                 scheduleReconnect()
             }
         }
