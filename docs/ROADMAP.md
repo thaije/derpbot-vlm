@@ -20,21 +20,12 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 Top priority — the only remaining failure mode after #14 (3/5) and #15. Two parts:
 (a) **misses on flat/small targets** (seed 2 pipe 0/31 flags; seed 4 can only mislocalised FPs);
 (b) **FP scatter** — tall depth-column median tracks the wall behind a cornered object, so the
-same target projects to drifting map positions → extra track ids (10 FPs across the sweep).
+same target projects to drifted map positions → extra track ids (10 FPs across the sweep).
 Done when ≥ 4/5 success and ≤ 1 FP/seed. Starting hypotheses in the issue.
 
-### 2. Phone-as-BLE-shell · [#21](https://github.com/thaije/derpbot-vlm/issues/21) — **next up**
-Replace the phone app with a thin relay: camera+IMU over WebSocket to the computer,
-BLE motor commands from the computer. All intelligence (VLM, planner, safety) runs
-in Python (`rvr_bridge/`), reusing `agent/vlm_client.py` + `shared/`. Zero APK
-rebuilds for logic changes. Supersedes #20 (closed). Unblocks #19 Steps 5-6.
-
-### 3. RVR+ real-robot Phase 1 · [#19](https://github.com/thaije/derpbot-vlm/issues/19)
-Sphero RVR+ + Android phone + cloud VLM — no ROS, no LiDAR. **Steps 1-4 done
-(hardware-verified)** with the on-phone brain. Remaining: IMU bump-detect (5) →
-logging (6) will be tackled via the relay architecture (#21) — IMU data streams
-from phone, bump detection runs in Python. `SPEED_MPS=0.35` uncalibrated;
-non-localhost cloud calls need Ollama API key.
+### Closed: #21 (phone-as-BLE-shell) + #19 (RVR+ Phase 1)
+Full closed-loop dev verified — drive robot + VLM agent from computer, zero phone interaction.
+Real-robot VLM agent found a shoe end-to-end (camera → VLM → verify → drive). Invariants in STATE.md.
 
 ---
 

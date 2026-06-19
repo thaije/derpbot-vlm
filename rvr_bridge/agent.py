@@ -107,9 +107,10 @@ class RvrAgent:
 
         logger.info("BLE ready. Waking RVR and zeroing heading.")
         await self.relay.send(WakeMessage())
-        await asyncio.sleep(1.0)
+        # RVR needs ~3s to wake from soft-sleep before accepting drive commands.
+        await asyncio.sleep(3.0)
         await self.relay.send(ResetYawMessage())
-        self._desired_heading = 0
+        await asyncio.sleep(0.5)
 
         self._vlm_client = self._make_vlm_client()
 
