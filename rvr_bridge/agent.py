@@ -19,7 +19,8 @@ from typing import Any, Callable, Optional
 from PIL import Image
 
 from .bump_detect import BumpDetector, BumpEvent
-from .protocol import DriveMessage, ResetYawMessage, SleepMessage, StopMessage, WakeMessage
+from .protocol import (DriveMessage, GetBleStateMessage, ResetYawMessage,
+                        SleepMessage, StopMessage, WakeMessage)
 from .server import PhoneRelay
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,9 @@ BUMP_TURN_DEG = 90
 DRIVE_FLAGS_FORWARD = 0x00
 DRIVE_FLAGS_REVERSE = 0x01
 
-TELEOP_TURN_RATE_DEG = 45
+TELEOP_TURN_DEG_PER_TICK = 5  # ≈100°/s at the 20 Hz teleop tick rate
+TELEOP_FRAME_MIN_GAP_S = 0.15  # caps request rate; real fps is bounded lower by
+                                # phone capture+encode+transfer time
 
 
 @dataclass
@@ -85,6 +88,7 @@ class RvrAgent:
         self._bump_event: Optional[BumpEvent] = None
         self._debug_bus = None  # #24: set if config.debug_bus_port is not None
         self._teleop_only = config.teleop_only  # #24: start paused if True
+        self._last_battery_poll: float = 0.0  # monotonic; 0 → poll immediately
 
         # Teleop state (#24): when teleop is active the autonomous loop pauses
         # and the panel owns drive commands.
@@ -134,7 +138,12 @@ class RvrAgent:
 
         logger.info("Phone connected. Waiting for BLE ready...")
         while self._running and self.relay.ble_state != "ready":
-            await asyncio.sleep(0.2)
+            # The phone only pushes ble_state on a transition (onStateChange);
+            # if BLE was already up before this process (re)started, no
+            # transition ever fires and this loop would hang forever. Poll
+            # for the current state instead of waiting passively.
+            await self.relay.send(GetBleStateMessage())
+            await asyncio.sleep(0.5)
 
         if not self._running:
             return
@@ -153,9 +162,11 @@ class RvrAgent:
             self._teleop_active = True
             self._emit_state()
 
+        frame_task = asyncio.ensure_future(self._teleop_frame_loop())
         try:
             await self._loop()
         finally:
+            frame_task.cancel()
             if self._debug_bus:
                 await self._debug_bus.stop()
             await self.relay.send(StopMessage(heading=self._desired_heading))
@@ -188,6 +199,9 @@ class RvrAgent:
 
     async def _loop(self) -> None:
         while self._running:
+            # Periodic battery poll (every 30 s; phone only sends on request)
+            await self._poll_battery()
+
             # Teleop override (#24): panel owns drive commands; loop idles.
             if self._teleop_active:
                 await self._teleop_tick()
@@ -343,6 +357,20 @@ class RvrAgent:
         if self.on_battery_event:
             self.on_battery_event({"pct": msg.pct})
 
+    async def _poll_battery(self) -> None:
+        """Request battery % from the phone every 30 s.
+
+        The phone only sends `battery` messages in response to `get_battery`
+        commands (it reads the RVR BLE response and relays it). Without this
+        poll the battery widget in the panel never gets data.
+        """
+        now = time.monotonic()
+        if now - self._last_battery_poll < 60.0:
+            return
+        self._last_battery_poll = now
+        from .protocol import GetBatteryMessage
+        await self.relay.send(GetBatteryMessage())
+
     def _on_frame(self, img: Image.Image) -> None:
         """Relay push-mode frame callback (when phone streams continuously)."""
         self._latest_frame = img
@@ -392,8 +420,34 @@ class RvrAgent:
         if not self._teleop_active:
             self.set_teleop(True)
 
+    async def _teleop_frame_loop(self) -> None:
+        """Stream camera frames to the panel while teleop is active (#24).
+
+        The autonomous loop only requests a frame once per VLM cycle
+        (~0.3-1s, often slower), too sparse to drive by. Runs as its own
+        task so the frame round-trip to the phone never blocks the 20 Hz
+        drive-command loop in `_teleop_tick`.
+        """
+        while self._running:
+            if self._teleop_active:
+                img = await self.relay.capture_frame()
+                if img is not None:
+                    self._latest_frame = img
+                    self._emit_frame(img)
+            await asyncio.sleep(TELEOP_FRAME_MIN_GAP_S)
+
     async def _teleop_tick(self) -> None:
         """Called every loop iteration while in teleop; sends drive commands.
+
+        Forward/backward: driveWithHeading at proportional speed.
+        Turn: driveWithHeading at speed=0 with a continuously incremented
+        heading target — the firmware's closed-loop yaw control rotates the
+        chassis to track it, so holding the key keeps nudging the target
+        ahead and the robot keeps turning. (raw_motors was tried first: it's
+        open-loop with no torque compensation, and 64/255 — fine for rolling
+        forward — wasn't enough to overcome the higher friction of pivoting
+        in place, so the wheels spun without turning the chassis.)
+        Both are hold-to-move, release-to-stop.
 
         Bump detector stays armed: a bump triggers emergency stop + reverse
         (same recovery as autonomous drive), then clears the teleop command.
@@ -407,23 +461,31 @@ class RvrAgent:
         lin = self._teleop_lin
         turn = self._teleop_turn
 
-        speed = int(abs(lin) * self.config.drive_speed_byte)
-        # Turn adjusts desired heading; drive command uses the new heading.
-        if turn != 0.0:
+        # Turning: continuously advance the heading target (hold to rotate)
+        if abs(turn) > 0.05 and abs(lin) < 0.05:
             self._desired_heading = self._norm_heading(
-                self._desired_heading + int(turn * TELEOP_TURN_RATE_DEG)
+                self._desired_heading + int(turn * TELEOP_TURN_DEG_PER_TICK)
             )
-
-        if abs(lin) < 0.05 and abs(turn) < 0.05:
-            await self.relay.send(StopMessage(heading=self._desired_heading))
+            await self.relay.send(DriveMessage(
+                speed=0,
+                heading=self._desired_heading,
+                flags=DRIVE_FLAGS_FORWARD,
+            ))
             return
 
-        flags = DRIVE_FLAGS_REVERSE if lin < 0 else DRIVE_FLAGS_FORWARD
-        await self.relay.send(DriveMessage(
-            speed=max(speed, 1),
-            heading=self._desired_heading,
-            flags=flags,
-        ))
+        # Forward/backward: driveWithHeading (hold to drive)
+        if abs(lin) > 0.05:
+            speed = max(int(abs(lin) * self.config.drive_speed_byte), 1)
+            flags = DRIVE_FLAGS_REVERSE if lin < 0 else DRIVE_FLAGS_FORWARD
+            await self.relay.send(DriveMessage(
+                speed=speed,
+                heading=self._desired_heading,
+                flags=flags,
+            ))
+            return
+
+        # Nothing pressed — stop
+        await self.relay.send(StopMessage(heading=self._desired_heading))
 
     async def _handle_bump_recovery(self) -> None:
         """Emergency stop + reverse + turn, shared by teleop and autonomous."""

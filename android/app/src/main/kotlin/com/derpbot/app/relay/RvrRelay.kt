@@ -135,6 +135,9 @@ class RvrRelay(
             is GetBatteryCommand -> {
                 connection.send(commands.getBatteryPercentage())
             }
+            is GetBleStateCommand -> {
+                sendBleState(connection.currentState.name.lowercase())
+            }
         }
     }
 

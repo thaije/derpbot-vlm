@@ -2,8 +2,8 @@
 
 All messages are JSON objects with a ``type`` field. The phone sends
 upstream messages (frame, imu, battery, ble_state); the computer sends
-downstream commands (capture_frame, drive, raw_motors, stop, wake,
-sleep, reset_yaw, get_battery).
+downstream commands (capture_frame, drive, raw_motors, stop, wake, sleep,
+reset_yaw, get_battery, get_ble_state).
 """
 
 from __future__ import annotations
@@ -96,6 +96,18 @@ class GetBatteryMessage:
     type: str = field(init=False, default="get_battery")
 
 
+@dataclass
+class GetBleStateMessage:
+    """Request the phone's *current* BLE state.
+
+    The phone only pushes `ble_state` on a transition (`onStateChange`), so a
+    fresh WS connection (e.g. after restarting this agent process) never
+    learns the state if the BLE link was already up and didn't change. Sent
+    on every iteration of the startup wait loop until a `ready` arrives.
+    """
+    type: str = field(init=False, default="get_ble_state")
+
+
 # ── Serialisation ────────────────────────────────────────────────────────
 
 def encode(msg: Any) -> str:
@@ -129,4 +141,6 @@ def decode(raw: str) -> Any:
         return ResetYawMessage()
     if t == "get_battery":
         return GetBatteryMessage()
+    if t == "get_ble_state":
+        return GetBleStateMessage()
     raise ValueError(f"Unknown message type: {t}")

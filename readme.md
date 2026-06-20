@@ -105,6 +105,41 @@ autonomous runs:
 python3.12 -m agent.agent_node --config config/vlm_config_cloud.yaml --save-frames ./debug_frames
 ```
 
+## Command panel (real robot)
+
+A web UI for observing the VLM loop live and teleoperating the RVR. Watch the
+camera feed, see VLM decisions and verifier verdicts in real time, and drive
+the robot with keyboard or on-screen joystick. Separate process — reload the
+browser without disturbing a live run.
+
+```bash
+# Terminal 1: RVR agent + debug bus (teleop-only = robot won't move on its own)
+python3.12 -m rvr_bridge --target fire_extinguisher \
+    --teleop-only --debug-bus 8770 --ws-host :: --ws-port 8765
+
+# Terminal 2: panel process
+python3.12 -m panel --agent-url ws://localhost:8770 --bind 0.0.0.0:8080
+
+# Browser → http://<laptop-ip>:8081   (HTTP is on bind port + 1)
+```
+
+**Teleop-only mode** (`--teleop-only`) starts the agent with the autonomous
+loop paused — the robot wakes up and zero-headings but never drives on its own.
+The panel owns all movement. Toggle teleop off from the panel to let the agent
+run autonomously.
+
+| Key | Action |
+|-----|--------|
+| `w` `a` `s` `d` | drive forward / left / reverse / right (sticky) |
+| `space` | E-STOP (halt motors; stays in teleop) |
+| `v` | manual VLM query (decision + verifier on current frame) |
+| `e` | toggle auto-observe mode |
+| `f` | toggle bump detector |
+| `q` | exit teleop mode (hand off to autonomous) |
+
+The panel also works on a phone — touch the joystick area to drive. See
+[issue #24](https://github.com/thaije/derpbot-vlm/issues/24) for details.
+
 ## Configuration
 
 All tunable parameters live in [`config/vlm_config.yaml`](config/vlm_config.yaml):

@@ -71,6 +71,7 @@ fun decodeCommand(raw: String): CommandMessage? {
         "sleep" -> SleepCommand
         "reset_yaw" -> ResetYawCommand
         "get_battery" -> GetBatteryCommand
+        "get_ble_state" -> GetBleStateCommand
         else -> null
     }
 }
@@ -85,3 +86,4 @@ object WakeCommand : CommandMessage()
 object SleepCommand : CommandMessage()
 object ResetYawCommand : CommandMessage()
 object GetBatteryCommand : CommandMessage()
+object GetBleStateCommand : CommandMessage()

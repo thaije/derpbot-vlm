@@ -65,6 +65,9 @@ class RvrBleConnection(
             main.post { listener.onStateChange(value) }
         }
 
+    /** Current state, for callers that need it outside an [onStateChange] push. */
+    val currentState: State get() = state
+
     // --- Scanning -----------------------------------------------------------
 
     @SuppressLint("MissingPermission")

@@ -203,8 +203,8 @@ class RvrDebugBus:
         x = float(msg.get("x", 0.0))
         y = float(msg.get("y", 0.0))
         # x = turn (-1 left, +1 right), y = forward (-1 reverse, +1 forward)
-        # RvrAgent.teleop_drive(lin, turn) where turn is +1 = left
-        self.agent.teleop_drive(lin=y, turn=-x)
+        # RVR heading increases clockwise (right), so +x → +heading
+        self.agent.teleop_drive(lin=y, turn=x)
 
     async def _cmd_rvr(self, msg: dict) -> None:
         from .protocol import (DriveMessage, ResetYawMessage, SleepMessage,
