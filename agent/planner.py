@@ -80,12 +80,16 @@ class Planner:
 
     def accept_decision(self, decision, current_yaw: float, x: float, y: float, sim_now: float,
                         heading_offset_rad: float | None = None) -> Commitment:
-        # When a precise bearing to the target is known (from the location bearing),
-        # use it instead of the quantised left/center/right heading — the ±30°
-        # buckets can't centre a target well enough to reach <1 m or keep it
-        # framed for the verifier. Falls back to the bucket when None.
-        offset = (heading_offset_rad if heading_offset_rad is not None
-                  else HEADING_OFFSETS_RAD.get(decision.heading, 0.0))
+        # Turn angle priority:
+        #   1. heading_offset_rad (from location bearings — most precise)
+        #   2. turn_angle_deg (VLM's explicit angle choice — -90..90)
+        #   3. HEADING_OFFSETS_RAD bucket (±30° — backwards compat)
+        if heading_offset_rad is not None:
+            offset = heading_offset_rad
+        elif getattr(decision, 'turn_angle_deg', 0) != 0:
+            offset = math.radians(float(decision.turn_angle_deg))
+        else:
+            offset = HEADING_OFFSETS_RAD.get(decision.heading, 0.0)
         yaw_target = self._normalize(current_yaw + offset)
 
         dist = max(0.0, min(MAX_DISTANCE_M, float(decision.drive_distance_m)))

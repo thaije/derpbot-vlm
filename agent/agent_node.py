@@ -238,11 +238,11 @@ class AgentNode:
             "    floor, a dark object in shadow). If you see ANY object that\n"
             "    plausibly matches the target, set target_visible=true and fill\n"
             "    target_location.\n"
-            "  - Which heading (left/center/right) leads toward the target or open space?\n"
+            "  - How much to turn (turn_angle_deg: -90/-60/-30/0/30/60/90, +=right)\n"
+            "    and how far to drive (0.0-2.0 m). Use 0.0 m + a large turn when\n"
+            "    facing a wall.\n"
             "  - When the target is NOT visible, prefer headings marked 'unexplored' over\n"
             "    'mostly previously visited' to cover new ground.\n"
-            "  - How far to drive in that heading (0.0-2.0 m). If front clearance is small,\n"
-            "    pick a heading with more space and/or a short distance (≤ 0.5 m).\n"
             "Reply JSON only."
         )
 

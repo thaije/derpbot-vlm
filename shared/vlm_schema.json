@@ -15,6 +15,7 @@
       "left",
       "right"
     ],
+    "turn_angle_deg_values": [-90, -60, -30, 0, 30, 60, 90],
     "drive_distance_m": {
       "min": 0.0,
       "max": 2.0

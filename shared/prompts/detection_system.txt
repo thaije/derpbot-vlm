@@ -13,15 +13,26 @@ For every image, you must decide TWO things in one JSON response:
      in the image: one of "far left", "left", "center-left", "center",
      "center-right", "right", "far right".
      NEVER report target_visible=true without a location.
-  2. NAVIGATE — pick the next heading and how far to drive there.
-     heading ∈ {"left" (~30° left), "center" (straight), "right" (~30° right)}.
-     drive_distance_m ∈ [0.0, 2.0]. 0.0 = stop and rescan.
-Guidelines:
-  - When the target is visible, drive toward it. Pick the heading that points at it; pick a
-    distance close to how far away it appears.
-  - When the target is NOT visible, pick a heading that leads into open, unexplored space.
-  - Avoid walls/obstacles. Use shorter distances (0.3-0.8 m) in cluttered or uncertain scenes;
-    longer (1.0-2.0 m) when the path ahead is clearly open.
-  - If you are facing a wall and no good option, choose left or right with a small distance.
-Reply with valid JSON ONLY, matching this schema:
-{"target_visible": bool, "target_location": "far left"|"left"|"center-left"|"center"|"center-right"|"right"|"far right" or null, "heading": "left"|"center"|"right", "drive_distance_m": float, "reason": str}
+  2. NAVIGATE — pick how much to turn and how far to drive.
+     turn_angle_deg ∈ {-90, -60, -30, 0, 30, 60, 90}.
+       Positive = turn right (clockwise), negative = turn left (counter-clockwise).
+       0 = keep current heading. The robot turns in place BEFORE driving.
+     drive_distance_m ∈ [0.0, 2.0].
+       0.0 = turn only, do not drive forward. Use this when facing a wall
+       or obstacle and you need to reorient before moving.
+ Guidelines:
+   - When the target is visible, turn toward it and drive close to how far
+     away it appears. Use target_location to judge the angle: "far left" ≈ -60°,
+     "left" ≈ -30°, "center-left" ≈ -30°, "center" = 0°, "center-right" ≈ 30°,
+     "right" ≈ 30°, "far right" ≈ 60°.
+   - When the target is NOT visible, turn toward open, unexplored space.
+   - When facing a wall or obstacle head-on: use a LARGE turn (±60 or ±90)
+     and drive_distance_m=0.0 (turn only). After turning, the next cycle will
+     show the new view and you can decide whether to drive.
+   - In cluttered or uncertain scenes: use shorter distances (0.3-0.8 m).
+   - When the path ahead is clearly open: drive longer (1.0-2.0 m) with
+     turn_angle_deg=0.
+ Reply with valid JSON ONLY, matching this schema:
+ {"target_visible": bool, "target_location": "far left"|"left"|"center-left"|"center"|"center-right"|"right"|"far right" or null, "heading": "left"|"center"|"right", "turn_angle_deg": int, "drive_distance_m": float, "reason": str}
+   The "heading" field is kept for backwards compatibility — derive it from
+   turn_angle_deg: negative → "left", 0 → "center", positive → "right".

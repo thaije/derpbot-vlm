@@ -34,6 +34,7 @@ _DIST_MIN = _SCHEMA["navigation_decision"]["drive_distance_m"]["min"]
 _DIST_MAX = _SCHEMA["navigation_decision"]["drive_distance_m"]["max"]
 _LOCATION_VALUES = _SCHEMA["navigation_decision"]["location_values"]
 _HEADING_TOKENS = set(_SCHEMA["navigation_decision"]["heading_values"])
+_TURN_ANGLE_VALUES = set(_SCHEMA["navigation_decision"]["turn_angle_deg_values"])
 
 SYSTEM_PROMPT = _load_prompt("detection_system.txt")
 
@@ -42,6 +43,7 @@ class NavigationDecision(BaseModel):
     target_visible: bool
     target_location: Optional[str] = None
     heading: Literal["left", "center", "right"]
+    turn_angle_deg: int = 0
     drive_distance_m: float = Field(ge=_DIST_MIN, le=_DIST_MAX)
     reason: str
 
@@ -132,6 +134,7 @@ class VLMResult:
     drive_distance_m: float
     target_location: Optional[str]
     reason: str
+    turn_angle_deg: int = 0
     image_width: int = 0
     image_height: int = 0
 
@@ -164,10 +167,37 @@ def _coerce_location(v) -> Optional[str]:
     return None
 
 
+def _coerce_turn_angle(v) -> int:
+    """Clamp turn_angle_deg to the allowed set {-90,-60,-30,0,30,60,90}."""
+    try:
+        deg = int(float(v))
+    except (TypeError, ValueError):
+        return 0
+    # snap to nearest allowed value
+    return min(_TURN_ANGLE_VALUES, key=lambda a: abs(a - deg))
+
+
+def _heading_from_turn_angle(deg: int) -> str:
+    if deg < 0:
+        return "left"
+    if deg > 0:
+        return "right"
+    return "center"
+
+
 def _result_from_dict(d: dict, raw: str) -> VLMResult:
+    turn_deg = _coerce_turn_angle(d.get("turn_angle_deg", 0))
+    heading = _coerce_heading(d.get("heading"))
+    # If heading is missing/center but turn_angle_deg is set, derive heading
+    if heading == "center" and turn_deg != 0:
+        heading = _heading_from_turn_angle(turn_deg)
+    # If turn_angle_deg is 0 but heading is set, derive angle from heading
+    if turn_deg == 0 and heading != "center":
+        turn_deg = -30 if heading == "left" else 30 if heading == "right" else 0
     return VLMResult(
         target_visible=bool(d.get("target_visible", False)),
-        heading=_coerce_heading(d.get("heading", "center")),
+        heading=heading,
+        turn_angle_deg=turn_deg,
         drive_distance_m=_clamp_distance(d.get("drive_distance_m", 0.0)),
         target_location=_coerce_location(d.get("target_location")),
         reason=str(d.get("reason", d.get("reasoning", raw[:200]))),
@@ -204,13 +234,21 @@ def _parse_vlm_response(raw: str) -> Optional[VLMResult]:
         re.search(r"i\s+(?:can\s+)?see\s+(?:a\s+|the\s+)?(?:fire\s+extinguisher|drink|drill|pipe|suitcase|target)", text)
     )
     heading = "center"
-    m = re.search(r"heading\s*[:=]\s*\"?(left|center|right)\"?", text)
+    turn_deg = 0
+    # Try turn_angle_deg first
+    m = re.search(r"turn_angle_deg\s*[:=]\s*(-?\d+)", text)
     if m:
-        heading = m.group(1)
-    elif re.search(r"\bturn\s+left|go\s+left\b", text):
-        heading = "left"
-    elif re.search(r"\bturn\s+right|go\s+right\b", text):
-        heading = "right"
+        turn_deg = _coerce_turn_angle(m.group(1))
+        heading = _heading_from_turn_angle(turn_deg)
+    else:
+        m = re.search(r"heading\s*[:=]\s*\"?(left|center|right)\"?", text)
+        if m:
+            heading = m.group(1)
+        elif re.search(r"\bturn\s+left|go\s+left\b", text):
+            heading = "left"
+        elif re.search(r"\bturn\s+right|go\s+right\b", text):
+            heading = "right"
+        turn_deg = -30 if heading == "left" else 30 if heading == "right" else 0
 
     dist = 0.5
     m = re.search(r"(?:drive_distance_m|distance|drive)\s*[:=]\s*([0-9]*\.?[0-9]+)", text)
@@ -221,6 +259,7 @@ def _parse_vlm_response(raw: str) -> Optional[VLMResult]:
     return VLMResult(
         target_visible=visible,
         heading=heading,
+        turn_angle_deg=turn_deg,
         drive_distance_m=dist,
         target_location=None,
         reason=raw[:200],
@@ -330,8 +369,9 @@ class VLMClient:
                 if result is not None:
                     result.image_width = sent_w
                     result.image_height = sent_h
-                    logger.info("VLM: vis=%s hdg=%s dist=%.2f loc=%s img=%dx%d | %s",
+                    logger.info("VLM: vis=%s hdg=%s turn=%+d° dist=%.2f loc=%s img=%dx%d | %s",
                                 result.target_visible, result.heading,
+                                result.turn_angle_deg,
                                 result.drive_distance_m, result.target_location,
                                 sent_w, sent_h, result.reason[:100])
                     if result.target_visible and result.target_location is None:

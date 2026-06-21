@@ -743,20 +743,27 @@ function addMessage(cls, tag, bodyHtml, metaText) {
 function updateDecision(msg) {
   const vis = msg.target_visible;
   const visHtml = vis ? '<span class="vis-y">VISIBLE</span>' : '<span class="vis-n">not visible</span>';
+  const turnDeg = msg.turn_angle_deg || 0;
+  const turnStr = turnDeg !== 0
+    ? `↻ ${turnDeg > 0 ? '+' : ''}${turnDeg}°`
+    : '→ straight';
+  const distStr = msg.drive_distance_m !== undefined
+    ? (msg.drive_distance_m <= 0.01 ? 'no drive (turn only)' : `${msg.drive_distance_m.toFixed(2)}m`)
+    : null;
   const parts = [
     `<b>${visHtml}</b>`,
     msg.target_location ? `📍 ${escapeHtml(msg.target_location)}` : null,
-    msg.heading ? `→ ${escapeHtml(msg.heading)}` : null,
-    msg.drive_distance_m !== undefined ? `${msg.drive_distance_m.toFixed(2)}m` : null,
+    turnStr,
+    distStr,
   ].filter(Boolean).join(' &nbsp;');
   const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
   addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''), meta);
 
   if (vis && msg.target_location) {
     flashOverlay(`📍 ${msg.target_location}`, '');
-  } else if (msg.heading) {
-    const arrow = msg.heading === 'left' ? '◀' : msg.heading === 'right' ? '▶' : '▲';
-    flashOverlay(`${arrow} ${msg.heading}`, 'warn');
+  } else if (turnDeg !== 0) {
+    const arrow = turnDeg < 0 ? '◀' : '▶';
+    flashOverlay(`${arrow} ${Math.abs(turnDeg)}° ${turnDeg < 0 ? 'left' : 'right'}`, 'warn');
   }
 }
 

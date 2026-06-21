@@ -238,8 +238,9 @@ class RvrAgent:
                 await asyncio.sleep(self.config.vlm_interval_s)
                 continue
 
-            logger.info("VLM: vis=%s hdg=%s dist=%.2f loc=%s | %s",
+            logger.info("VLM: vis=%s hdg=%s turn=%+d° dist=%.2f loc=%s | %s",
                         decision.target_visible, decision.heading,
+                        decision.turn_angle_deg,
                         decision.drive_distance_m, decision.target_location,
                         decision.reason[:80])
 
@@ -281,11 +282,9 @@ class RvrAgent:
                 "reason": decision.reason[:120],
             })
 
-            if decision.heading == "left":
-                self._desired_heading -= TURN_STEP_DEG
-            elif decision.heading == "right":
-                self._desired_heading += TURN_STEP_DEG
-            self._desired_heading = self._norm_heading(self._desired_heading)
+            self._desired_heading = self._norm_heading(
+                self._desired_heading + decision.turn_angle_deg
+            )
             self._emit_state()
 
             await self._execute_drive(decision.drive_distance_m)
@@ -407,9 +406,8 @@ class RvrAgent:
             "  - Is the target visible? Scan floor, corners, walls, edges. The target may be",
             "    small or low-contrast. If you see ANY object that plausibly matches, set",
             "    target_visible=true and fill target_location.",
-            "  - Which heading (left/center/right) leads toward the target or open space?",
-            "  - How far to drive in that heading (0.0-2.0 m). In tight/uncertain scenes pick",
-            "    a short distance (<= 0.5 m).",
+            "  - How much to turn (turn_angle_deg: -90/-60/-30/0/30/60/90, +=right) and how",
+            "    far to drive (0.0-2.0 m). Use 0.0 m + a large turn when facing a wall.",
             "Reply JSON only.",
         ]
         return "\n".join(lines)
@@ -552,8 +550,9 @@ class RvrAgent:
             logger.warning("Manual query: VLM returned None")
             return
 
-        logger.info("MANUAL VLM: vis=%s hdg=%s dist=%.2f loc=%s | %s",
+        logger.info("MANUAL VLM: vis=%s hdg=%s turn=%+d° dist=%.2f loc=%s | %s",
                     decision.target_visible, decision.heading,
+                    decision.turn_angle_deg,
                     decision.drive_distance_m, decision.target_location,
                     decision.reason[:80])
         self._emit_decision(decision, latency_ms)
@@ -611,6 +610,7 @@ class RvrAgent:
             self.on_decision({
                 "target_visible": decision.target_visible,
                 "heading": decision.heading,
+                "turn_angle_deg": decision.turn_angle_deg,
                 "drive_distance_m": decision.drive_distance_m,
                 "target_location": decision.target_location,
                 "reason": decision.reason,

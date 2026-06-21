@@ -181,8 +181,9 @@ class DebugNode(AgentNode):
             logger.warning("VLM returned no result")
             return
         logger.info(
-            "PARSED DECISION: target_visible=%s heading=%s drive=%.2fm location=%s",
+            "PARSED DECISION: target_visible=%s heading=%s turn=%+d° drive=%.2fm location=%s",
             result.target_visible, result.heading,
+            getattr(result, 'turn_angle_deg', 0),
             result.drive_distance_m, result.target_location)
         logger.info("PARSED REASON: %s", result.reason)
 
