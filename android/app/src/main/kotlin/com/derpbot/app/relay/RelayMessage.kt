@@ -80,6 +80,11 @@ fun decodeCommand(raw: String): CommandMessage? {
         "get_battery" -> GetBatteryCommand
         "get_ble_state" -> GetBleStateCommand
         "get_phone_battery" -> GetPhoneBatteryCommand
+        "torch" -> TorchCommand(on = obj.getBoolean("on"))
+        "beep" -> BeepCommand(
+            type = obj.optString("beep_type", "found"),
+            volume = obj.optInt("volume", 80),
+        )
         else -> null
     }
 }
@@ -96,3 +101,5 @@ object ResetYawCommand : CommandMessage()
 object GetBatteryCommand : CommandMessage()
 object GetBleStateCommand : CommandMessage()
 object GetPhoneBatteryCommand : CommandMessage()
+data class TorchCommand(val on: Boolean) : CommandMessage()
+data class BeepCommand(val type: String, val volume: Int) : CommandMessage()

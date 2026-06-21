@@ -261,6 +261,7 @@ class RvrAgent:
                     if confirmed:
                         self._confirmed_count += 1
                         if decision.drive_distance_m <= self.config.arrive_dist_m:
+                            await self.beep("found")
                             await self.relay.send(StopMessage(heading=self._desired_heading))
                             logger.info("ARRIVED at '%s' (confirmed, dist≈%.2f m)",
                                         self.config.target, decision.drive_distance_m)
@@ -507,6 +508,7 @@ class RvrAgent:
     async def _handle_bump_recovery(self) -> None:
         """Emergency stop + reverse + turn, shared by teleop and autonomous."""
         logger.info("Bump during teleop — emergency stop")
+        await self.beep("bump")
         await self.relay.send(StopMessage(heading=self._desired_heading))
         await self.relay.send(DriveMessage(
             speed=self.config.drive_speed_byte // 2,
@@ -573,6 +575,14 @@ class RvrAgent:
         self.config.target_description = description
         self._confirmed_count = 0
         self._emit_state()
+
+    async def set_torch(self, on: bool) -> None:
+        from .protocol import TorchMessage
+        await self.relay.send(TorchMessage(on=on))
+
+    async def beep(self, beep_type: str = "found", volume: int = 80) -> None:
+        from .protocol import BeepMessage
+        await self.relay.send(BeepMessage(beep_type=beep_type, volume=volume))
 
     def toggle(self, which: str, value: Optional[bool] = None) -> bool:
         """Toggle a panel-controlled flag. Returns the new state."""

@@ -6,6 +6,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.BatteryManager
 import android.util.Base64
 import android.util.Log
@@ -142,6 +144,13 @@ class RvrRelay(
             is GetPhoneBatteryCommand -> {
                 sendPhoneBattery()
             }
+            is TorchCommand -> {
+                camera.enableTorch(cmd.on)
+                onEvent("TORCH ${if (cmd.on) "ON" else "OFF"}")
+            }
+            is BeepCommand -> {
+                playBeep(cmd.type, cmd.volume)
+            }
         }
     }
 
@@ -233,6 +242,40 @@ class RvrRelay(
         val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
         val msg = PhoneBatteryMessage(pct).toJson()
         webSocket?.send(msg)
+    }
+
+    private fun playBeep(type: String, volume: Int) {
+        val vol = volume.coerceIn(0, 100)
+        scope.launch(Dispatchers.Default) {
+            val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, vol)
+            try {
+                when (type) {
+                    "found" -> {
+                        // Happy ascending: three rising beeps
+                        toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 100); delay(110)
+                        toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 100); delay(110)
+                        toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 180); delay(200)
+                    }
+                    "bump" -> {
+                        // Sad descending: two low buzzes
+                        toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 150); delay(160)
+                        toneGen.startTone(ToneGenerator.TONE_PROP_NACK, 200); delay(210)
+                    }
+                    "error" -> {
+                        // Harsh single tone
+                        toneGen.startTone(ToneGenerator.TONE_PROP_NACK, 300); delay(310)
+                    }
+                    "click" -> {
+                        toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 50); delay(60)
+                    }
+                    else -> {
+                        toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 100); delay(110)
+                    }
+                }
+            } finally {
+                toneGen.release()
+            }
+        }
     }
 
     companion object {

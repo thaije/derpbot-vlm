@@ -119,6 +119,19 @@ class GetBleStateMessage:
     type: str = field(init=False, default="get_ble_state")
 
 
+@dataclass
+class TorchMessage:
+    type: str = field(init=False, default="torch")
+    on: bool = False
+
+
+@dataclass
+class BeepMessage:
+    type: str = field(init=False, default="beep")
+    beep_type: str = "found"  # found|bump|error|click
+    volume: int = 80
+
+
 # ── Serialisation ────────────────────────────────────────────────────────
 
 def encode(msg: Any) -> str:

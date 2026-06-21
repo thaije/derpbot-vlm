@@ -191,6 +191,11 @@ class RvrDebugBus:
                 )
             elif mtype == "rvr":
                 await self._cmd_rvr(msg)
+            elif mtype == "torch":
+                await self.agent.set_torch(msg.get("on", False))
+            elif mtype == "beep":
+                await self.agent.beep(msg.get("beep_type", "found"),
+                                      msg.get("volume", 80))
             elif mtype == "get_state":
                 await ws.send(json.dumps({"type": "state",
                                           **self.agent._state_snapshot()}))

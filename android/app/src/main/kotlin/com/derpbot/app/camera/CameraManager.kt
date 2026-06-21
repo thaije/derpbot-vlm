@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.util.Log
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -38,6 +39,7 @@ class CameraManager(
 
     @Volatile private var latestFrame: Bitmap? = null
     @Volatile private var lastConvertMs: Long = 0L
+    private var camera: Camera? = null
 
     suspend fun bind() {
         val provider: ProcessCameraProvider = suspendCancellableCoroutine { cont ->
@@ -54,8 +56,15 @@ class CameraManager(
                 .build()
             analysis.setAnalyzer(analyzerExecutor, ::onFrame)
             provider.unbindAll()
-            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
+            camera = provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, analysis)
             Log.i(TAG, "Camera bound (ImageAnalysis)")
+        }
+    }
+
+    fun enableTorch(on: Boolean) {
+        camera?.let { c ->
+            runCatching { c.cameraControl.enableTorch(on) }
+                .onFailure { Log.e(TAG, "Torch failed: ${it.message}") }
         }
     }
 

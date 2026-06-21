@@ -521,6 +521,7 @@ kbd {
     <button class="mode-auto" data-mode="auto">Autonomous</button>
   </div>
   <button class="icon-btn" id="query-btn" data-tooltip="VLM query (V)">🔍</button>
+  <label class="toggle-pill"><input type="checkbox" id="toggle-torch" data-tooltip="Phone flashlight"> 🔦 Torch</label>
   <label class="toggle-pill"><input type="checkbox" id="toggle-bump" checked> Bump stop</label>
   <div class="rvr-group">
     <button class="icon-btn compact" id="wake-btn" data-tooltip="Wake RVR">☀</button>
@@ -894,6 +895,12 @@ document.getElementById('reset-yaw-btn').addEventListener('click', () => sendCmd
 // ── Bump toggle ───────────────────────────────────────────────────
 document.getElementById('toggle-bump').addEventListener('change', (e) => {
   sendCmd({ type: 'toggle', which: 'bump', value: e.target.checked });
+});
+
+// ── Torch ────────────────────────────────────────────────────────
+document.getElementById('toggle-torch').addEventListener('change', (e) => {
+  sendCmd({ type: 'torch', on: e.target.checked });
+  addMessage('msg-info', 'TORCH', e.target.checked ? 'Flashlight ON' : 'Flashlight OFF');
 });
 
 // ── Keyboard ─────────────────────────────────────────────────────
