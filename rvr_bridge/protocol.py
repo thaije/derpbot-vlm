@@ -40,6 +40,12 @@ class BatteryMessage:
 
 
 @dataclass
+class PhoneBatteryMessage:
+    type: str = field(init=False, default="phone_battery")
+    pct: int = 0
+
+
+@dataclass
 class BleStateMessage:
     type: str = field(init=False, default="ble_state")
     state: str = ""  # idle|scanning|connecting|discovering|ready|disconnected|error
@@ -97,6 +103,11 @@ class GetBatteryMessage:
 
 
 @dataclass
+class GetPhoneBatteryMessage:
+    type: str = field(init=False, default="get_phone_battery")
+
+
+@dataclass
 class GetBleStateMessage:
     """Request the phone's *current* BLE state.
 
@@ -123,6 +134,8 @@ def decode(raw: str) -> Any:
         return ImuMessage(**{k: v for k, v in d.items() if k != "type"})
     if t == "battery":
         return BatteryMessage(**{k: v for k, v in d.items() if k != "type"})
+    if t == "phone_battery":
+        return PhoneBatteryMessage(**{k: v for k, v in d.items() if k != "type"})
     if t == "ble_state":
         return BleStateMessage(**{k: v for k, v in d.items() if k != "type"})
     if t == "capture_frame":

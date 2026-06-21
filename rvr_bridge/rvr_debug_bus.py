@@ -74,6 +74,7 @@ class RvrDebugBus:
         self.agent.on_bump_event = self._on_agent_bump
         self.agent.on_ble_event = self._on_agent_ble
         self.agent.on_battery_event = self._on_agent_battery
+        self.agent.on_phone_battery_event = self._on_agent_phone_battery
         self.agent.on_state_change = self._on_agent_state
 
     # ── Agent callback → broadcast ──────────────────────────────────────
@@ -118,6 +119,10 @@ class RvrDebugBus:
 
     def _on_agent_battery(self, data: dict) -> None:
         msg = {"type": "battery", **data, "ts": time.time()}
+        asyncio.ensure_future(self._broadcast_json(msg))
+
+    def _on_agent_phone_battery(self, data: dict) -> None:
+        msg = {"type": "phone_battery", **data, "ts": time.time()}
         asyncio.ensure_future(self._broadcast_json(msg))
 
     def _on_agent_state(self, data: dict) -> None:

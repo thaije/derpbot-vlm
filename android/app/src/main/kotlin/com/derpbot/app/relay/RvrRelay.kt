@@ -6,6 +6,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.BatteryManager
 import android.util.Base64
 import android.util.Log
 import com.derpbot.app.ble.RvrBleConnection
@@ -138,6 +139,9 @@ class RvrRelay(
             is GetBleStateCommand -> {
                 sendBleState(connection.currentState.name.lowercase())
             }
+            is GetPhoneBatteryCommand -> {
+                sendPhoneBattery()
+            }
         }
     }
 
@@ -221,6 +225,13 @@ class RvrRelay(
 
     fun sendBattery(pct: Int) {
         val msg = BatteryMessage(pct).toJson()
+        webSocket?.send(msg)
+    }
+
+    fun sendPhoneBattery() {
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val pct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val msg = PhoneBatteryMessage(pct).toJson()
         webSocket?.send(msg)
     }
 

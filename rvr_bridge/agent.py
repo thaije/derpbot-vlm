@@ -108,11 +108,13 @@ class RvrAgent:
         self.on_bump_event: Optional[Callable[[dict], None]] = None
         self.on_ble_event: Optional[Callable[[dict], None]] = None
         self.on_battery_event: Optional[Callable[[dict], None]] = None
+        self.on_phone_battery_event: Optional[Callable[[dict], None]] = None
         self.on_state_change: Optional[Callable[[dict], None]] = None
 
         self.relay.on_imu = self._on_imu
         self.relay.on_ble_state = self._on_ble_state
         self.relay.on_battery = self._on_battery
+        self.relay.on_phone_battery = self._on_phone_battery
         self.relay.on_frame = self._on_frame
 
     async def run(self) -> None:
@@ -137,6 +139,7 @@ class RvrAgent:
             return
 
         logger.info("Phone connected. Waiting for BLE ready...")
+        ble_ready = False
         while self._running and self.relay.ble_state != "ready":
             # The phone only pushes ble_state on a transition (onStateChange);
             # if BLE was already up before this process (re)started, no
@@ -144,16 +147,24 @@ class RvrAgent:
             # for the current state instead of waiting passively.
             await self.relay.send(GetBleStateMessage())
             await asyncio.sleep(0.5)
+            # In teleop-only mode, don't block forever on BLE — the camera
+            # works without the RVR. Stream frames while waiting.
+            if self._teleop_only:
+                break
 
         if not self._running:
             return
 
-        logger.info("BLE ready. Waking RVR and zeroing heading.")
-        await self.relay.send(WakeMessage())
-        # RVR needs ~3s to wake from soft-sleep before accepting drive commands.
-        await asyncio.sleep(3.0)
-        await self.relay.send(ResetYawMessage())
-        await asyncio.sleep(0.5)
+        ble_ready = self.relay.ble_state == "ready"
+        if ble_ready:
+            logger.info("BLE ready. Waking RVR and zeroing heading.")
+            await self.relay.send(WakeMessage())
+            # RVR needs ~3s to wake from soft-sleep before accepting drive commands.
+            await asyncio.sleep(3.0)
+            await self.relay.send(ResetYawMessage())
+            await asyncio.sleep(0.5)
+        else:
+            logger.info("BLE not ready (RVR unavailable). Camera-only mode.")
 
         self._vlm_client = self._make_vlm_client()
 
@@ -357,6 +368,11 @@ class RvrAgent:
         if self.on_battery_event:
             self.on_battery_event({"pct": msg.pct})
 
+    def _on_phone_battery(self, msg) -> None:
+        logger.info("Phone battery: %d%%", msg.pct)
+        if self.on_phone_battery_event:
+            self.on_phone_battery_event({"pct": msg.pct})
+
     async def _poll_battery(self) -> None:
         """Request battery % from the phone every 30 s.
 
@@ -368,8 +384,9 @@ class RvrAgent:
         if now - self._last_battery_poll < 60.0:
             return
         self._last_battery_poll = now
-        from .protocol import GetBatteryMessage
+        from .protocol import GetBatteryMessage, GetPhoneBatteryMessage
         await self.relay.send(GetBatteryMessage())
+        await self.relay.send(GetPhoneBatteryMessage())
 
     def _on_frame(self, img: Image.Image) -> None:
         """Relay push-mode frame callback (when phone streams continuously)."""

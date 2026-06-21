@@ -63,34 +63,23 @@ body {
 .panel-logo .logo-animated { opacity: 0; }
 .panel-logo:hover .logo-static { opacity: 0; }
 .panel-logo:hover .logo-animated { opacity: 1; }
-.topbar .backend-chip {
-  background: var(--accent);
-  color: #fff;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-}
-.topbar .target-name {
+.topbar .status-label {
   font-family: var(--mono);
   font-size: 13px;
   color: var(--text);
 }
-.topbar .timer {
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--text-dim);
-}
 .topbar .spacer { flex: 1; }
-.status-dots { display: flex; gap: 8px; align-items: center; }
-.status-dot {
+.status-dots { display: flex; gap: 16px; align-items: center; }
+.status-group { display: flex; gap: 6px; align-items: center; }
+.status-icon {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
   color: var(--text-dim);
+  transition: color 0.2s;
 }
+.status-icon.ok { color: var(--green); }
+.status-icon.warn { color: var(--yellow); }
+.status-icon.err { color: var(--red); }
 .dot {
   width: 8px; height: 8px;
   border-radius: 50%;
@@ -176,6 +165,8 @@ body {
   min-width: 0;
 }
 #camera {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -201,8 +192,8 @@ body {
 .overlay-badge.err { color: var(--red); }
 
 .side-pane {
-  width: 420px;
-  min-width: 300px;
+  width: 380px;
+  min-width: 280px;
   max-width: 600px;
   background: var(--panel);
   border-left: 1px solid var(--border);
@@ -210,7 +201,7 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
-@media (max-width: 1023px) {
+@media (max-width: 669px) {
   .main { flex-direction: column; }
   .side-pane {
     width: 100%;
@@ -221,160 +212,136 @@ body {
   }
 }
 
-/* ── Tabs ── */
-.tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.tab {
-  padding: 8px 16px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-dim);
-  border-bottom: 2px solid transparent;
-  transition: all 0.15s;
-}
-.tab:hover { color: var(--text); }
-.tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-}
-.tab-content {
+/* ── Conversation ── */
+#conversation {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 10px 12px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
+  scroll-behavior: smooth;
 }
-
-/* ── Decision tab ── */
-.decision-card {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
+.msg {
   margin-bottom: 8px;
-}
-.decision-card .label {
-  color: var(--text-dim);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-.decision-card .value {
-  color: var(--text);
-  font-size: 13px;
-  margin-top: 2px;
-}
-.decision-card .value.vis-true { color: var(--green); }
-.decision-card .value.vis-false { color: var(--text-dim); }
-.decision-card .latency { color: var(--text-dim); font-size: 11px; }
-.decision-card .reason {
-  color: var(--text-dim);
-  margin-top: 6px;
-  font-style: italic;
-}
-.verifier-card {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid var(--border);
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
-  margin-bottom: 8px;
+  animation: msgIn 0.15s ease-out;
 }
-.verifier-card.confirmed { border-color: var(--green); }
-.verifier-card.rejected { border-color: var(--red); }
+@keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+.msg .msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.msg .msg-ts { color: var(--text-dim); opacity: 0.6; font-size: 10px; white-space: nowrap; }
+.msg .msg-tag { font-weight: 700; font-size: 11px; letter-spacing: 0.3px; }
+.msg .msg-meta { color: var(--text-dim); font-size: 11px; margin-left: auto; }
+.msg .msg-body { color: var(--text); font-size: 12px; }
+.msg .msg-body .detail { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+.msg .msg-body .reason { color: var(--text-dim); font-style: italic; margin-top: 4px; }
 
-/* ── Log tab ── */
-#log-area {
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--text-dim);
-}
-#log-area .log-line { padding: 1px 0; }
-#log-area .log-line .ts { color: var(--text-dim); opacity: 0.6; }
-#log-area .log-line.info { color: var(--text); }
-#log-area .log-line.warn { color: var(--yellow); }
-#log-area .log-line.error { color: var(--red); }
+.msg.msg-target { border-left-color: var(--accent); }
+.msg.msg-target .msg-tag { color: var(--accent); }
+
+.msg.msg-vlm { border-left-color: var(--text-dim); }
+.msg.msg-vlm .msg-tag { color: var(--text); }
+.msg.msg-vlm .vis-y { color: var(--green); font-weight: 700; }
+.msg.msg-vlm .vis-n { color: var(--text-dim); }
+
+.msg.msg-verifier.confirmed { border-left-color: var(--green); }
+.msg.msg-verifier.rejected { border-left-color: var(--red); }
+.msg.msg-verifier .msg-tag { color: var(--yellow); }
+.msg.msg-verifier.confirmed .msg-tag { color: var(--green); }
+.msg.msg-verifier.rejected .msg-tag { color: var(--red); }
+.msg.msg-verifier .match { color: var(--green); }
+.msg.msg-verifier .mismatch { color: var(--red); }
+
+.msg.msg-system { border-left-color: var(--border); background: transparent; padding: 4px 10px; }
+.msg.msg-system .msg-tag { color: var(--text-dim); }
+.msg.msg-system .msg-body { color: var(--text-dim); font-size: 11px; }
+
+.msg.msg-warn { border-left-color: var(--yellow); }
+.msg.msg-warn .msg-tag { color: var(--yellow); }
+.msg.msg-warn .msg-body { color: var(--yellow); }
+
+.msg.msg-error { border-left-color: var(--red); }
+.msg.msg-error .msg-tag { color: var(--red); }
+.msg.msg-error .msg-body { color: var(--red); }
+
+.msg.msg-info { border-left-color: var(--accent); }
+.msg.msg-info .msg-tag { color: var(--accent); }
 
 /* ── Control strip ── */
 .controls {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
+  gap: 10px;
+  padding: 8px 12px;
   background: var(--panel);
   border-top: 1px solid var(--border);
-  min-height: 56px;
+  min-height: 48px;
   flex-shrink: 0;
   flex-wrap: wrap;
 }
-.joystick-area {
-  width: 80px;
-  height: 80px;
-  background: var(--bg);
+
+/* ── Mode switch (segmented) ── */
+.mode-switch {
+  display: flex;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  position: relative;
-  touch-action: none;
-  cursor: crosshair;
+  border-radius: 6px;
   flex-shrink: 0;
 }
-.joystick-knob {
-  width: 24px;
-  height: 24px;
-  background: var(--accent);
-  border-radius: 50%;
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  transition: opacity 0.15s;
-}
-.kbd-hints {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 11px;
+.mode-switch button {
+  background: var(--bg);
+  border: none;
   color: var(--text-dim);
-  font-family: var(--mono);
-}
-.kbd-hints kbd {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 1px 5px;
-  font-size: 10px;
-  color: var(--text);
-}
-.control-btn {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
+  padding: 6px 14px;
   font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
 }
-.control-btn:hover { border-color: var(--accent); }
-.control-btn:active { transform: scale(0.96); }
-.control-btn.stop-btn {
-  background: var(--red);
-  border-color: var(--red);
+.mode-switch button + button { border-left: 1px solid var(--border); }
+.mode-switch button:first-child { border-radius: 6px 0 0 6px; }
+.mode-switch button:last-child { border-radius: 0 6px 6px 0; }
+.mode-switch button:hover { color: var(--text); }
+.mode-switch button.active {
   color: #fff;
-  font-weight: 600;
 }
+.mode-switch button.active.mode-teleop { background: var(--accent); }
+.mode-switch button.active.mode-auto { background: var(--green); }
+
+/* ── Icon buttons ── */
+.icon-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 5px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.icon-btn:hover { border-color: var(--accent); color: var(--text); }
+.icon-btn:active { transform: scale(0.95); }
+.icon-btn.compact { font-size: 12px; padding: 4px 7px; }
+
+/* ── Toggle pill ── */
 .toggle-pill {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-size: 12px;
   color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
 }
 .toggle-pill input[type="checkbox"] {
   accent-color: var(--accent);
@@ -382,35 +349,123 @@ body {
   height: 14px;
   cursor: pointer;
 }
-.target-input {
+
+/* ── RVR button group ── */
+.rvr-group {
   display: flex;
   gap: 4px;
-  align-items: center;
+  margin-left: auto;
 }
-.target-input input {
+
+/* ── Tooltip ── */
+[data-tooltip] { position: relative; }
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 4px 8px;
+  padding: 6px 10px;
   border-radius: 4px;
-  font-size: 12px;
+  font-size: 11px;
   font-family: var(--mono);
-  width: 160px;
+  white-space: pre;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  z-index: 100;
 }
-.rvr-buttons {
-  display: flex;
-  gap: 4px;
+[data-tooltip]:hover::after { opacity: 1; }
+[data-tooltip].tooltip-below::after {
+  bottom: auto;
+  top: calc(100% + 6px);
 }
 
-/* ── Misc ── */
-.conn-status {
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 4px;
+kbd {
   background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--text);
 }
-.conn-status.connected { color: var(--green); }
-.conn-status.disconnected { color: var(--red); }
+
+/* ── Modal ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.modal-overlay.show { opacity: 1; pointer-events: auto; }
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  width: 360px;
+  max-width: 90vw;
+}
+.modal h3 {
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+.modal label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.modal input[type="text"] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: var(--mono);
+  margin-bottom: 12px;
+}
+.modal input[type="text"]:focus { border-color: var(--accent); outline: none; }
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.modal-actions button {
+  padding: 6px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.modal-actions button:hover { border-color: var(--accent); }
+.modal-actions button.primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+  font-weight: 600;
+}
+.modal-actions button.primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -424,16 +479,26 @@ body {
     <img class="logo-static" src="logo.svg" alt="derpbot logo">
     <img class="logo-animated" src="logo-animated.svg" alt="">
   </span>
-  <span class="backend-chip" id="backend-chip">—</span>
-  <span class="target-name" id="target-name">target: —</span>
-  <span class="timer" id="timer">00:00</span>
+  <span class="status-label" id="status-label">—</span>
   <span class="spacer"></span>
   <div class="status-dots" id="status-dots">
-    <span class="status-dot"><span class="dot" id="dot-ws"></span>WS</span>
-    <span class="status-dot"><span class="dot" id="dot-ble"></span>BLE</span>
-    <span class="battery" id="battery-widget">
-      <span class="battery-icon" id="battery-icon"><span class="battery-fill" id="battery-fill"></span></span>
-      <span id="battery-pct">?</span>
+    <span class="status-group">
+      <span class="status-icon tooltip-below" id="phone-icon" data-tooltip="Phone connection">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>
+      </span>
+      <span class="battery tooltip-below" id="phone-battery-widget" data-tooltip="Phone battery">
+        <span class="battery-icon" id="phone-battery-icon"><span class="battery-fill" id="phone-battery-fill"></span></span>
+        <span id="phone-battery-pct">?</span>
+      </span>
+    </span>
+    <span class="status-group">
+      <span class="status-icon tooltip-below" id="robot-icon" data-tooltip="Robot BLE connection">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><circle cx="9" cy="14" r="1.5" fill="currentColor"/><circle cx="15" cy="14" r="1.5" fill="currentColor"/><path d="M12 4v4"/><circle cx="12" cy="3" r="1" fill="currentColor"/></svg>
+      </span>
+      <span class="battery tooltip-below" id="battery-widget" data-tooltip="RVR battery">
+        <span class="battery-icon" id="battery-icon"><span class="battery-fill" id="battery-fill"></span></span>
+        <span id="battery-pct">?</span>
+      </span>
     </span>
   </div>
   <button class="estop" id="estop-btn" title="Emergency Stop (Space)">E-STOP</button>
@@ -446,47 +511,36 @@ body {
   </div>
 
   <div class="side-pane">
-    <div class="tabs">
-      <div class="tab active" data-tab="decision">Decision</div>
-      <div class="tab" data-tab="log">Log</div>
-    </div>
-    <div class="tab-content" id="tab-decision">
-      <div id="decision-container">
-        <div class="decision-card">
-          <div class="label">Waiting for first VLM query...</div>
-        </div>
-      </div>
-      <div id="verifier-container"></div>
-    </div>
-    <div class="tab-content" id="tab-log" style="display:none">
-      <div id="log-area"></div>
-    </div>
+    <div id="conversation"></div>
   </div>
 </div>
 
 <div class="controls">
-  <div class="joystick-area" id="joystick">
-    <div class="joystick-knob" id="joystick-knob"></div>
+  <div class="mode-switch" id="mode-switch">
+    <button class="mode-teleop active" data-mode="teleop" data-tooltip="W/S fwd/rev&#10;A/D turn&#10;Space stop&#10;V query&#10;Q quit">Teleop</button>
+    <button class="mode-auto" data-mode="auto">Autonomous</button>
   </div>
-  <div class="kbd-hints">
-    <div><kbd>W</kbd>/<kbd>S</kbd> fwd/rev &nbsp; <kbd>A</kbd>/<kbd>D</kbd> turn</div>
-    <div><kbd>Space</kbd> stop &nbsp; <kbd>V</kbd> query &nbsp; <kbd>Q</kbd> quit teleop</div>
+  <button class="icon-btn" id="query-btn" data-tooltip="VLM query (V)">🔍</button>
+  <label class="toggle-pill"><input type="checkbox" id="toggle-bump" checked> Bump stop</label>
+  <div class="rvr-group">
+    <button class="icon-btn compact" id="wake-btn" data-tooltip="Wake RVR">☀</button>
+    <button class="icon-btn compact" id="sleep-btn" data-tooltip="Sleep RVR">🌙</button>
+    <button class="icon-btn compact" id="reset-yaw-btn" data-tooltip="Reset yaw">⟲</button>
   </div>
-  <button class="control-btn stop-btn" id="stop-btn">STOP</button>
-  <button class="control-btn" id="query-btn">Manual Query <kbd>v</kbd></button>
-  <label class="toggle-pill"><input type="checkbox" id="toggle-teleop"> Teleop</label>
-  <label class="toggle-pill"><input type="checkbox" id="toggle-bump" checked> Stop on bump</label>
-  <label class="toggle-pill"><input type="checkbox" id="toggle-auto"> Auto</label>
-  <div class="target-input">
-    <input type="text" id="target-input" placeholder="target object" spellcheck="false">
-    <button class="control-btn" id="set-target-btn">Set</button>
+</div>
+
+<div class="modal-overlay" id="target-modal">
+  <div class="modal">
+    <h3>Start Autonomous Mode</h3>
+    <label for="modal-target">Target object</label>
+    <input type="text" id="modal-target" placeholder="e.g. fire_extinguisher" spellcheck="false" autofocus>
+    <label for="modal-desc">Description (optional)</label>
+    <input type="text" id="modal-desc" placeholder="e.g. red cylinder on the wall" spellcheck="false">
+    <div class="modal-actions">
+      <button id="modal-cancel">Cancel</button>
+      <button class="primary" id="modal-start" disabled>Start</button>
+    </div>
   </div>
-  <div class="rvr-buttons">
-    <button class="control-btn" id="wake-btn">Wake</button>
-    <button class="control-btn" id="sleep-btn">Sleep</button>
-    <button class="control-btn" id="reset-yaw-btn">Reset Yaw</button>
-  </div>
-  <span class="conn-status disconnected" id="bus-status">bus: —</span>
 </div>
 
 <script>
@@ -499,9 +553,6 @@ const wsUrl = `${wsProtocol}//${wsHost}:${WS_PORT}/`;
 let ws = null;
 let wsConnected = false;
 let busConnected = false;
-let startTime = null;
-const logEntries = [];
-const MAX_LOG = 500;
 
 function connectWS() {
   ws = new WebSocket(wsUrl);
@@ -535,7 +586,6 @@ function connectWS() {
         const img = document.getElementById('camera');
         if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
         img.src = url;
-        if (!startTime) startTime = Date.now();
       }
       return;
     }
@@ -553,8 +603,9 @@ function connectWS() {
 function handleMessage(msg) {
   switch (msg.type) {
     case 'hello':
-      document.getElementById('backend-chip').textContent = msg.backend || '?';
-      addLog('info', `Backend: ${msg.backend}, capabilities: ${(msg.capabilities||[]).join(', ')}`);
+      currentBackend = msg.backend || '?';
+      updateStatusLabel();
+      addMessage('msg-info', 'CONNECT', `Backend: <b>${escapeHtml(msg.backend || '?')}</b>${msg.capabilities ? ' · ' + escapeHtml(msg.capabilities.join(', ')) : ''}`);
       break;
     case 'state':
       updateState(msg);
@@ -566,18 +617,20 @@ function handleMessage(msg) {
       updateVerifier(msg);
       break;
     case 'imu':
-      // Could add an IMU mini-display; for now just note it
       break;
     case 'bump':
-      addLog('warn', `BUMP detected! mag=${msg.magnitude?.toFixed(1)}`);
+      addMessage('msg-warn', 'BUMP', `Collision detected · magnitude <b>${msg.magnitude?.toFixed(1)}</b>`);
       flashOverlay('BUMP!', 'err');
       break;
     case 'ble':
       updateBLE(msg.state);
-      addLog('info', `BLE: ${msg.state}`);
+      addMessage('msg-system', 'BLE', escapeHtml(msg.state));
       break;
     case 'battery':
       updateBattery(msg.pct);
+      break;
+    case 'phone_battery':
+      updatePhoneBattery(msg.pct);
       break;
     case 'log':
       addLog(msg.level || 'info', msg.msg);
@@ -585,33 +638,46 @@ function handleMessage(msg) {
     case 'pong':
       break;
     case 'toggle_ack':
-      addLog('info', `Toggle ${msg.which} = ${msg.value}`);
+      addMessage('msg-info', 'TOGGLE', `${escapeHtml(msg.which)} = <b>${msg.value}</b>`);
       break;
   }
 }
 
 // ── State update ───────────────────────────────────────────────────
 function updateState(msg) {
-  if (msg.target) document.getElementById('target-name').textContent = `target: ${msg.target}`;
   if (msg.target !== undefined) {
-    document.getElementById('target-input').value = msg.target || '';
+    const newTarget = msg.target || '';
+    const newDesc = msg.target_description || '';
+    if (newTarget !== currentTarget || newDesc !== currentTargetDesc) {
+      currentTarget = newTarget;
+      currentTargetDesc = newDesc;
+      updateStatusLabel();
+      if (newTarget) {
+        addMessage('msg-target', 'TARGET',
+          `Find <b>${escapeHtml(newTarget)}</b>${newDesc ? ` — ${escapeHtml(newDesc)}` : ''}`);
+      }
+    }
   }
   updateBLE(msg.ble_state);
   updateBattery(msg.battery_pct);
-  document.getElementById('dot-ws').className = msg.phone_connected ? 'dot ok' : 'dot err';
-  document.getElementById('toggle-teleop').checked = msg.teleop_active || false;
   document.getElementById('toggle-bump').checked = msg.bump_enabled !== false;
-  document.getElementById('toggle-auto').checked = msg.auto_mode || false;
-  busConnected = msg.phone_connected;
-  document.getElementById('bus-status').textContent = busConnected ? 'bus: connected' : 'bus: —';
-  document.getElementById('bus-status').className = busConnected ? 'conn-status connected' : 'conn-status disconnected';
+  // Sync mode switch from agent state
+  if (msg.teleop_active) {
+    setModeButton('teleop');
+  } else if (msg.target) {
+    setModeButton('auto');
+  }
 }
 
 function updateBLE(state) {
-  const dot = document.getElementById('dot-ble');
-  if (state === 'ready') dot.className = 'dot ok';
-  else if (state && state !== 'disconnected') dot.className = 'dot warn';
-  else dot.className = 'dot err';
+  const icon = document.getElementById('robot-icon');
+  icon.classList.remove('ok', 'warn', 'err');
+  let cls = 'err';
+  if (state === 'ready') cls = 'ok';
+  else if (state && state !== 'disconnected') cls = 'warn';
+  icon.classList.add(cls);
+  const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : 'Unknown';
+  icon.setAttribute('data-tooltip', `Robot BLE: ${label}`);
 }
 
 function updateBattery(pct) {
@@ -626,30 +692,66 @@ function updateBattery(pct) {
   pctEl.textContent = pct + '%';
 }
 
-// ── Decision display ──────────────────────────────────────────────
-function updateDecision(msg) {
-  const container = document.getElementById('decision-container');
-  const visClass = msg.target_visible ? 'vis-true' : 'vis-false';
-  const visText = msg.target_visible ? 'YES' : 'no';
-  const lat = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
+function updatePhoneBattery(pct) {
+  if (pct === undefined || pct === null) return;
+  const fill = document.getElementById('phone-battery-fill');
+  const icon = document.getElementById('phone-battery-icon');
+  const pctEl = document.getElementById('phone-battery-pct');
+  const level = pct > 30 ? 'ok' : pct > 10 ? 'warn' : 'err';
+  fill.className = 'battery-fill ' + level;
+  fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  icon.className = 'battery-icon ' + level;
+  pctEl.textContent = pct + '%';
+}
 
-  container.innerHTML = `
-    <div class="decision-card">
-      <div class="label">Target Visible</div>
-      <div class="value ${visClass}">${visText}</div>
-      <div class="label" style="margin-top:6px">Heading</div>
-      <div class="value">${msg.heading || '—'}</div>
-      <div class="label" style="margin-top:6px">Drive Distance</div>
-      <div class="value">${msg.drive_distance_m !== undefined ? msg.drive_distance_m.toFixed(2) + ' m' : '—'}</div>
-      <div class="label" style="margin-top:6px">Location</div>
-      <div class="value">${msg.target_location || '—'}</div>
-      ${lat ? `<div class="latency" style="margin-top:4px">⏱ ${lat}</div>` : ''}
-      ${msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''}
+// ── Conversation ──────────────────────────────────────────────────
+const MAX_MSGS = 200;
+let currentTarget = null;
+let currentTargetDesc = null;
+let currentBackend = null;
+
+function updateStatusLabel() {
+  const el = document.getElementById('status-label');
+  let label = currentBackend ? currentBackend.toUpperCase() : '—';
+  if (currentTarget && currentTarget !== 'teleop') {
+    label += ` looking for ${currentTarget}`;
+  } else if (currentBackend) {
+    label += ' is looking for input';
+  }
+  el.textContent = label;
+}
+
+function addMessage(cls, tag, bodyHtml, metaText) {
+  const conv = document.getElementById('conversation');
+  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const el = document.createElement('div');
+  el.className = `msg ${cls}`;
+  el.innerHTML = `
+    <div class="msg-head">
+      <span class="msg-tag">${escapeHtml(tag)}</span>
+      ${metaText ? `<span class="msg-meta">${escapeHtml(metaText)}</span>` : ''}
+      <span class="msg-ts">${ts}</span>
     </div>
+    <div class="msg-body">${bodyHtml}</div>
   `;
+  conv.appendChild(el);
+  while (conv.children.length > MAX_MSGS) conv.removeChild(conv.firstChild);
+  conv.scrollTop = conv.scrollHeight;
+}
 
-  // Update camera overlay
-  if (msg.target_visible && msg.target_location) {
+function updateDecision(msg) {
+  const vis = msg.target_visible;
+  const visHtml = vis ? '<span class="vis-y">VISIBLE</span>' : '<span class="vis-n">not visible</span>';
+  const parts = [
+    `<b>${visHtml}</b>`,
+    msg.target_location ? `📍 ${escapeHtml(msg.target_location)}` : null,
+    msg.heading ? `→ ${escapeHtml(msg.heading)}` : null,
+    msg.drive_distance_m !== undefined ? `${msg.drive_distance_m.toFixed(2)}m` : null,
+  ].filter(Boolean).join(' &nbsp;');
+  const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
+  addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''), meta);
+
+  if (vis && msg.target_location) {
     flashOverlay(`📍 ${msg.target_location}`, '');
   } else if (msg.heading) {
     const arrow = msg.heading === 'left' ? '◀' : msg.heading === 'right' ? '▶' : '▲';
@@ -658,28 +760,15 @@ function updateDecision(msg) {
 }
 
 function updateVerifier(msg) {
-  const container = document.getElementById('verifier-container');
   const cls = msg.confirmed ? 'confirmed' : 'rejected';
   const verdict = msg.confirmed ? 'CONFIRMED' : 'REJECTED';
-  const lat = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
-
-  let matchesHtml = '';
-  if (msg.matches && msg.matches.length) {
-    matchesHtml += `<div class="value" style="color:var(--green)">✓ ${escapeHtml(msg.matches.join(', '))}</div>`;
-  }
-  if (msg.mismatches && msg.mismatches.length) {
-    matchesHtml += `<div class="value" style="color:var(--red)">✗ ${escapeHtml(msg.mismatches.join(', '))}</div>`;
-  }
-
-  container.innerHTML = `
-    <div class="verifier-card ${cls}">
-      <div class="label">Verifier</div>
-      <div class="value" style="color:${msg.confirmed?'var(--green)':'var(--red)'}">${verdict}</div>
-      ${lat ? `<div class="latency">⏱ ${lat}</div>` : ''}
-      ${matchesHtml}
-      ${msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''}
-    </div>
-  `;
+  const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
+  let detail = '';
+  if (msg.matches && msg.matches.length) detail += `<div class="detail"><span class="match">✓ ${escapeHtml(msg.matches.join(', '))}</span></div>`;
+  if (msg.mismatches && msg.mismatches.length) detail += `<div class="detail"><span class="mismatch">✗ ${escapeHtml(msg.mismatches.join(', '))}</span></div>`;
+  addMessage(`msg-verifier ${cls}`, `VERIFIER · ${verdict}`,
+    `<b>${verdict}</b>` + detail + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''),
+    meta);
 }
 
 // ── Camera overlay ────────────────────────────────────────────────
@@ -693,36 +782,23 @@ function flashOverlay(text, cls) {
   }, 5000);
 }
 
-// ── Log ───────────────────────────────────────────────────────────
+// ── Log (routed into conversation) ────────────────────────────────
+const levelToCls = { info: 'msg-info', warn: 'msg-warn', error: 'msg-error' };
+const levelToTag = { info: 'INFO', warn: 'WARN', error: 'ERROR' };
 function addLog(level, msg) {
-  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
-  logEntries.push({ level, msg, ts });
-  if (logEntries.length > MAX_LOG) logEntries.shift();
-  renderLog();
-}
-
-function renderLog() {
-  const area = document.getElementById('log-area');
-  area.innerHTML = logEntries.map(e =>
-    `<div class="log-line ${e.level}"><span class="ts">[${e.ts}]</span> ${escapeHtml(e.msg)}</div>`
-  ).join('');
-  area.scrollTop = area.scrollHeight;
+  const cls = levelToCls[level] || 'msg-system';
+  const tag = levelToTag[level] || level.toUpperCase();
+  addMessage(cls, tag, escapeHtml(msg));
 }
 
 // ── Status dots ───────────────────────────────────────────────────
 function updateStatusDots() {
-  const dot = document.getElementById('dot-ws');
-  dot.className = wsConnected ? 'dot ok' : 'dot err';
+  const icon = document.getElementById('phone-icon');
+  icon.classList.remove('ok', 'warn', 'err');
+  const state = wsConnected ? 'ok' : 'err';
+  icon.classList.add(state);
+  icon.setAttribute('data-tooltip', `Phone websocket: ${wsConnected ? 'connected' : 'disconnected'}`);
 }
-
-// ── Timer ─────────────────────────────────────────────────────────
-setInterval(() => {
-  if (!startTime) return;
-  const elapsed = Math.floor((Date.now() - startTime) / 1000);
-  const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
-  const s = String(elapsed % 60).padStart(2, '0');
-  document.getElementById('timer').textContent = `${m}:${s}`;
-}, 1000);
 
 // ── Send commands ─────────────────────────────────────────────────
 function sendCmd(msg) {
@@ -731,97 +807,94 @@ function sendCmd(msg) {
   }
 }
 
-// ── Tabs ──────────────────────────────────────────────────────────
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
-    document.getElementById(`tab-${tab.dataset.tab}`).style.display = '';
-  });
-});
-
 // ── E-STOP ────────────────────────────────────────────────────────
 function emergencyStop() {
   sendCmd({ type: 'stop' });
-  document.getElementById('toggle-teleop').checked = false;
   addLog('warn', 'E-STOP sent');
 }
 document.getElementById('estop-btn').addEventListener('click', emergencyStop);
-document.getElementById('stop-btn').addEventListener('click', emergencyStop);
 
-// ── Manual query ──────────────────────────────────────────────────
+// ── Mode switch (Teleop / Autonomous) ─────────────────────────────
+const modeSwitch = document.getElementById('mode-switch');
+const targetModal = document.getElementById('target-modal');
+const modalTarget = document.getElementById('modal-target');
+const modalDesc = document.getElementById('modal-desc');
+const modalStart = document.getElementById('modal-start');
+const modalCancel = document.getElementById('modal-cancel');
+
+function setModeButton(mode) {
+  modeSwitch.querySelectorAll('button').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
+}
+
+function switchToTeleop() {
+  sendCmd({ type: 'toggle', which: 'teleop', value: true });
+  setModeButton('teleop');
+}
+
+function switchToAutonomous(target, desc) {
+  sendCmd({ type: 'set_target', target, target_description: desc || '' });
+  sendCmd({ type: 'toggle', which: 'teleop', value: false });
+  setModeButton('auto');
+  addLog('info', `Autonomous mode: target=${target}`);
+}
+
+modeSwitch.querySelectorAll('button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const mode = btn.dataset.mode;
+    if (mode === 'teleop') {
+      switchToTeleop();
+    } else {
+      // Open modal; pre-fill if we know the current target
+      modalTarget.value = currentTarget || '';
+      modalDesc.value = currentTargetDesc || '';
+      modalStart.disabled = !modalTarget.value.trim();
+      targetModal.classList.add('show');
+      modalTarget.focus();
+    }
+  });
+});
+
+modalTarget.addEventListener('input', () => {
+  modalStart.disabled = !modalTarget.value.trim();
+});
+modalTarget.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && modalTarget.value.trim()) {
+    modalStart.click();
+  }
+});
+modalCancel.addEventListener('click', () => {
+  targetModal.classList.remove('show');
+  setModeButton('teleop');
+});
+modalStart.addEventListener('click', () => {
+  const t = modalTarget.value.trim();
+  const d = modalDesc.value.trim();
+  if (!t) return;
+  targetModal.classList.remove('show');
+  switchToAutonomous(t, d);
+});
+targetModal.addEventListener('click', (e) => {
+  if (e.target === targetModal) {
+    targetModal.classList.remove('show');
+    setModeButton('teleop');
+  }
+});
+
+// ── Query / RVR buttons ───────────────────────────────────────────
 document.getElementById('query-btn').addEventListener('click', () => {
   sendCmd({ type: 'manual_query' });
   addLog('info', 'Manual query sent');
 });
-
-// ── Toggles ───────────────────────────────────────────────────────
-document.getElementById('toggle-teleop').addEventListener('change', (e) => {
-  sendCmd({ type: 'toggle', which: 'teleop', value: e.target.checked });
-});
-document.getElementById('toggle-bump').addEventListener('change', (e) => {
-  sendCmd({ type: 'toggle', which: 'bump', value: e.target.checked });
-});
-document.getElementById('toggle-auto').addEventListener('change', (e) => {
-  sendCmd({ type: 'toggle', which: 'auto', value: e.target.checked });
-});
-
-// ── Set target ────────────────────────────────────────────────────
-document.getElementById('set-target-btn').addEventListener('click', () => {
-  const target = document.getElementById('target-input').value.trim();
-  if (target) {
-    sendCmd({ type: 'set_target', target });
-    addLog('info', `Target set: ${target}`);
-  }
-});
-document.getElementById('target-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') document.getElementById('set-target-btn').click();
-});
-
-// ── RVR buttons ───────────────────────────────────────────────────
 document.getElementById('wake-btn').addEventListener('click', () => sendCmd({ type: 'rvr', cmd: 'wake' }));
 document.getElementById('sleep-btn').addEventListener('click', () => sendCmd({ type: 'rvr', cmd: 'sleep' }));
 document.getElementById('reset-yaw-btn').addEventListener('click', () => sendCmd({ type: 'rvr', cmd: 'reset_yaw' }));
 
-// ── Joystick ──────────────────────────────────────────────────────
-const joystick = document.getElementById('joystick');
-const knob = document.getElementById('joystick-knob');
-let joystickActive = false;
-
-function joystickMove(e) {
-  if (!joystickActive) return;
-  const rect = joystick.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-  let dx = (e.clientX - cx) / (rect.width / 2);
-  let dy = (e.clientY - cy) / (rect.height / 2);
-  dx = Math.max(-1, Math.min(1, dx));
-  dy = Math.max(-1, Math.min(1, dy));
-  knob.style.left = `${50 + dx * 35}%`;
-  knob.style.top = `${50 + dy * 35}%`;
-  // x = turn (right = +), y = forward (+ = up on screen = -dy)
-  sendTeleop(dx, -dy);
-}
-
-function joystickEnd() {
-  if (!joystickActive) return;
-  joystickActive = false;
-  knob.style.left = '50%';
-  knob.style.top = '50%';
-  sendTeleop(0, 0);
-}
-
-joystick.addEventListener('touchstart', (e) => { e.preventDefault(); joystickActive = true; });
-joystick.addEventListener('touchmove', (e) => { e.preventDefault(); joystickMove(e.touches[0]); });
-joystick.addEventListener('touchend', joystickEnd);
-joystick.addEventListener('mousedown', (e) => { joystickActive = true; joystickMove(e); });
-document.addEventListener('mousemove', joystickMove);
-document.addEventListener('mouseup', joystickEnd);
-
-function sendTeleop(x, y) {
-  sendCmd({ type: 'teleop', x, y });
-}
+// ── Bump toggle ───────────────────────────────────────────────────
+document.getElementById('toggle-bump').addEventListener('change', (e) => {
+  sendCmd({ type: 'toggle', which: 'bump', value: e.target.checked });
+});
 
 // ── Keyboard ─────────────────────────────────────────────────────
 const keys = {};
@@ -835,7 +908,7 @@ document.addEventListener('keydown', (e) => {
 
   if (key === ' ') { emergencyStop(); return; }
   if (key === 'v') { sendCmd({ type: 'manual_query' }); addLog('info','Manual query sent'); return; }
-  if (key === 'q') { sendCmd({ type: 'toggle', which: 'teleop', value: false }); return; }
+  if (key === 'q') { switchToTeleop(); return; }
 
   updateKeyboardTeleop();
 });
@@ -856,16 +929,17 @@ function updateKeyboardTeleop() {
   if (lin !== teleopLin || turn !== teleopTurn) {
     teleopLin = lin;
     teleopTurn = turn;
-    if (lin !== 0 || turn !== 0) {
-      // Enable teleop if any movement key is pressed
-      const checkbox = document.getElementById('toggle-teleop');
-      if (!checkbox.checked) {
-        checkbox.checked = true;
-        sendCmd({ type: 'toggle', which: 'teleop', value: true });
-      }
+    // Ensure we're in teleop mode if movement keys pressed
+    const activeBtn = modeSwitch.querySelector('button.active');
+    if ((lin !== 0 || turn !== 0) && (!activeBtn || activeBtn.dataset.mode !== 'teleop')) {
+      switchToTeleop();
     }
     sendTeleop(turn, lin);
   }
+}
+
+function sendTeleop(x, y) {
+  sendCmd({ type: 'teleop', x, y });
 }
 
 // ── Heartbeat ─────────────────────────────────────────────────────
@@ -883,7 +957,7 @@ function escapeHtml(s) {
 
 // ── Init ──────────────────────────────────────────────────────────
 connectWS();
-addLog('info', 'DerpBot panel initialised — waiting for agent...');
+addMessage('msg-system', 'PANEL', 'DerpBot panel initialised — waiting for agent...');
 </script>
 </body>
 </html>

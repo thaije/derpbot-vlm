@@ -43,6 +43,13 @@ data class BatteryMessage(val pct: Int) : RelayMessage() {
     }.toString()
 }
 
+data class PhoneBatteryMessage(val pct: Int) : RelayMessage() {
+    override fun toJson(): String = JSONObject().apply {
+        put("type", "phone_battery")
+        put("pct", pct)
+    }.toString()
+}
+
 data class BleStateMessage(val state: String) : RelayMessage() {
     override fun toJson(): String = JSONObject().apply {
         put("type", "ble_state")
@@ -72,6 +79,7 @@ fun decodeCommand(raw: String): CommandMessage? {
         "reset_yaw" -> ResetYawCommand
         "get_battery" -> GetBatteryCommand
         "get_ble_state" -> GetBleStateCommand
+        "get_phone_battery" -> GetPhoneBatteryCommand
         else -> null
     }
 }
@@ -87,3 +95,4 @@ object SleepCommand : CommandMessage()
 object ResetYawCommand : CommandMessage()
 object GetBatteryCommand : CommandMessage()
 object GetBleStateCommand : CommandMessage()
+object GetPhoneBatteryCommand : CommandMessage()

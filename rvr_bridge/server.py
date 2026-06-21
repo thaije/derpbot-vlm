@@ -26,7 +26,9 @@ from .protocol import (
     DriveMessage,
     FrameMessage,
     GetBatteryMessage,
+    GetPhoneBatteryMessage,
     ImuMessage,
+    PhoneBatteryMessage,
     RawMotorsMessage,
     ResetYawMessage,
     SleepMessage,
@@ -65,6 +67,7 @@ class PhoneRelay:
         self.on_imu: Optional[Callable[[ImuMessage], None]] = None
         self.on_ble_state: Optional[Callable[[BleStateMessage], None]] = None
         self.on_battery: Optional[Callable[[BatteryMessage], None]] = None
+        self.on_phone_battery: Optional[Callable[[PhoneBatteryMessage], None]] = None
 
         self._pending_frame_future: Optional[asyncio.Future] = None
         self._latest_imu: Optional[ImuMessage] = None
@@ -139,6 +142,10 @@ class PhoneRelay:
                     if self.on_battery:
                         self.on_battery(msg)
                     logger.info("Battery: %d%%", msg.pct)
+                elif isinstance(msg, PhoneBatteryMessage):
+                    if self.on_phone_battery:
+                        self.on_phone_battery(msg)
+                    logger.info("Phone battery: %d%%", msg.pct)
                 else:
                     logger.debug("Unhandled message type: %s", type(msg).__name__)
         except websockets.ConnectionClosed:
