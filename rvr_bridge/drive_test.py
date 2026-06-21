@@ -67,11 +67,20 @@ def _pick_device() -> str | None:
 
 
 def restart_app(device: str | None) -> None:
-    """Wake screen, dismiss keyguard, set up adb reverse, force-stop + relaunch.
+    """Wake screen briefly, set up adb reverse, force-stop + relaunch.
 
-    Without an awake+unlocked screen, Samsung's "Freecess" app-freezer caches the
-    activity moments after launch and the OkHttp WebSocket is torn down before BLE
-    ever reaches `ready`. Keep the screen on while we work.
+    The relay runs in a foreground service (RvrRelayService) which Samsung's
+    "Freecess" app-freezer does not cache — so the screen can turn off while
+    a run is in progress and the BLE connection stays alive (verified: 45s
+    screen-off test, RVR stays connected).
+
+    However, Samsung aggressively throttles *unfiltered* BLE scans when the
+    screen is off, even with a foreground service running (Android docs say
+    foreground services exempt scans from throttling, but Samsung's power
+    management overrides this). So the screen must be on during the ~2s scan
+    phase. We wake it here; it times out naturally after the system screen-off
+    timeout — no need to force it off, the foreground service handles the
+    connection phase with screen off.
 
     ``adb reverse tcp:8765 tcp:8765`` tunnels the phone's 127.0.0.1:8765 to the
     laptop's 127.0.0.1:8765 over the ADB connection. Direct WiFi TCP from the
@@ -79,22 +88,12 @@ def restart_app(device: str | None) -> None:
     SocketTimeoutException even though ping + nc work) — the ADB reverse tunnel
     sidesteps the phone's WiFi TCP stack entirely.
     """
-    # Long screen-off timeout so the phone doesn't sleep mid-drive.
-    try:
-        _adb(["shell", "settings", "put", "system", "screen_off_timeout",
-              "2147483647"], device, timeout=10)
-    except subprocess.CalledProcessError:
-        pass
+    # Wake screen for the BLE scan phase (Samsung throttles unfiltered scans
+    # with screen off despite foreground service). Screen times out naturally
+    # — the foreground service keeps BLE alive once connected.
     _adb(["shell", "input", "keyevent", "KEYCODE_WAKEUP"], device, timeout=10)
-    _adb(["shell", "wm", "dismiss-keyguard"], device, timeout=10)
     # ADB reverse: phone's 127.0.0.1:8765 → laptop's 127.0.0.1:8765.
-    # This works for the app process (launched by `am start`) even though
-    # `run-as <pkg> nc` can't access the tunnel — the app process's network
-    # namespace is set up by Android's Zygote, not by `run-as`.
-    # Direct WiFi TCP from OkHttp is unreliable on some networks
-    # (ECONNABORTED/SocketTimeoutException even though ping+nc work).
     _adb(["reverse", "tcp:8765", "tcp:8765"], device, timeout=10)
-    # Ensure the app's server URL points at the tunnel endpoint.
     _ensure_server_url(device, "ws://127.0.0.1:8765")
     _adb(["shell", "am", "force-stop", PACKAGE], device)
     _adb(["shell", "am", "start", "-n", ACTIVITY], device)

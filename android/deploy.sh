@@ -54,11 +54,8 @@ adb -s "$SERIAL" install -r "$APK" 2>&1 || {
   adb -s "$SERIAL" install "$APK"
 }
 
-echo ">>> Waking screen (Samsung Freecess freezes the app before BLE reaches ready if the screen is off/locked)..."
-adb -s "$SERIAL" shell settings put system screen_off_timeout 2147483647 || true
+echo ">>> Waking screen for BLE scan phase (Samsung throttles unfiltered scans with screen off despite foreground service)..."
 adb -s "$SERIAL" shell input keyevent KEYCODE_WAKEUP
-adb -s "$SERIAL" shell wm dismiss-keyguard
-
-echo ">>> Starting app..."
+echo ">>> Starting app (screen dims naturally; foreground service keeps BLE alive once connected)..."
 adb -s "$SERIAL" shell am start -n com.derpbot.app/.RelayActivity
 echo ">>> Done!"
