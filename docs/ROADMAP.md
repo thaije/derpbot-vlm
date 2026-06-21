@@ -16,18 +16,13 @@ Current state lives in [`STATE.md`](STATE.md). History lives in closed issues + 
 
 ## Next
 
-### 1. Detection reliability · [#18](https://github.com/thaije/derpbot-vlm/issues/18)
-Top priority — the only remaining failure mode after #14 (3/5) and #15. Two parts:
-(a) **misses on flat/small targets** (seed 2 pipe 0/31 flags; seed 4 can only mislocalised FPs);
-(b) **FP scatter** — tall depth-column median tracks the wall behind a cornered object, so the
-same target projects to drifted map positions → extra track ids (10 FPs across the sweep).
-Done when ≥ 4/5 success and ≤ 1 FP/seed. Starting hypotheses in the issue.
-
-### 2. Real-robot structured scenario eval · [#23](https://github.com/thaije/derpbot-vlm/issues/23)
-First real-world benchmark. Two modes: **hard** (one-shot, autonomous, post-hoc scoring from
-saved frames + tape) and **few-shot** (N attempts, human gives `yes`/`wrong`/`far` feedback
-when robot declares arrived). 5 objects × 3 runs × 2 modes = 30 trials. Reveals whether sim
-failure modes transfer to real world. Builds on #21 (closed).
+### 1. Create 3 backend · [#25](https://github.com/thaije/derpbot-vlm/issues/25)
+Second real-robot transport. iRobot Create 3 (ROS 2 Iron firmware, FastDDS, Jazzy-compatible) via
+`/cmd_vel` + `/imu`/`/odom`/`/hazard_detection`/`/battery_state`; same Android phone in camera-only
+mode. Refactor `RvrAgent` → `BaseRealAgent` + `RobotTransport` ABC; RVR + Create 3 become transports.
+One panel, backend selected at launch. Feature parity: LED ring, audio, hazard display, odom-based
+heading. Prereq verification (topic inventory, `irobot_create_msgs` on Jazzy, Iron↔Jazzy DDS interop)
+before code; RVR regression gate after Phase 1 refactor.
 
 ---
 
@@ -35,6 +30,8 @@ failure modes transfer to real world. Builds on #21 (closed).
 
 Titles only. Expand when a task is promoted to "Next".
 
+- **Detection reliability** · [#18](https://github.com/thaije/derpbot-vlm/issues/18) — misses on flat/small targets + FP scatter. Done when ≥ 4/5 success and ≤ 1 FP/seed. Starting hypotheses in the issue.
+- **Real-robot structured scenario eval** · [#23](https://github.com/thaije/derpbot-vlm/issues/23) — First real-world benchmark. One-shot + few-shot modes, 5 objects × 3 runs × 2 modes = 30 trials. Reveals whether sim failure modes transfer to real world. Builds on #21 (closed); needs a working real-robot backend (Create 3 via #25 or RVR).
 - **VLM tool calling** — Define `navigate()`, `report_detection()`, and `toggle_flashlight()` as Ollama tools; model decides when to call each. Replaces `target_visible` boolean field with separate detection tool call. Lets VLM report detections independently of navigation actions, and enables the model to turn the phone flashlight on/off autonomously (e.g. when the scene is too dark to see).
 - **Benchmark submission** · [#4](https://github.com/thaije/derpbot-vlm/issues/4) — `validate_submission.py` + result JSONs.
 - **Medium/hard tier scenarios** · [#5](https://github.com/thaije/derpbot-vlm/issues/5) — once easy ≥ 3/5.
