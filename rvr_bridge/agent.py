@@ -293,8 +293,11 @@ class RvrAgent:
 
     async def _execute_drive(self, distance_m: float) -> None:
         if distance_m <= 0.0:
+            # Turn only: use high speed so the motors have enough torque to
+            # rotate the chassis (speed=0 causes stalling).
             await self.relay.send(DriveMessage(
-                speed=0, heading=self._desired_heading, flags=DRIVE_FLAGS_FORWARD
+                speed=200,
+                heading=self._desired_heading, flags=DRIVE_FLAGS_FORWARD
             ))
             return
 
@@ -478,12 +481,15 @@ class RvrAgent:
         turn = self._teleop_turn
 
         # Turning: continuously advance the heading target (hold to rotate)
+        # Use a high speed so the firmware's yaw controller has enough motor
+        # torque to overcome wheel-scrub friction during pivot turns.
+        # speed=0 caused stalling → motor thermal protection errors.
         if abs(turn) > 0.05 and abs(lin) < 0.05:
             self._desired_heading = self._norm_heading(
                 self._desired_heading + int(turn * TELEOP_TURN_DEG_PER_TICK)
             )
             await self.relay.send(DriveMessage(
-                speed=0,
+                speed=max(int(abs(turn) * self.config.drive_speed_byte), 200),
                 heading=self._desired_heading,
                 flags=DRIVE_FLAGS_FORWARD,
             ))

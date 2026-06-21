@@ -32,8 +32,10 @@ def main() -> None:
     parser.add_argument("--log-file", default=None, help="JSONL log file path")
     parser.add_argument("--debug-bus", type=int, default=None, metavar="PORT",
                         help="Start debug bus WS server on this port (for panel; #24)")
-    parser.add_argument("--teleop-only", action="store_true",
-                        help="Start in teleop mode — autonomous loop paused, panel owns all movement (#24)")
+    parser.add_argument("--teleop-only", action="store_true", default=True,
+                        help="Start in teleop mode — autonomous loop paused, panel owns all movement (#24). Default: True.")
+    parser.add_argument("--no-teleop-only", dest="teleop_only", action="store_false",
+                        help="Start in autonomous mode instead of teleop.")
     parser.add_argument("--restart-app", action="store_true",
                         help="Set up adb reverse + restart phone app via ADB (no phone interaction)")
     args = parser.parse_args()
