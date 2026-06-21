@@ -183,7 +183,7 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         val notif: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("derpbot relay")
             .setContentText("Busy — screen can dim")
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(pi)
             .build()
