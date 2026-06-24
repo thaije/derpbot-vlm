@@ -90,6 +90,7 @@ class Create3Transport(RobotTransport):
         self._node: Optional["_Create3Node"] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._connected = False
+        self._hazard_pending = False  # set by _on_ros_hazard, cleared by move_linear/rotate
 
         # Wire relay callbacks for camera frames (phone in camera-only mode)
         self.relay.on_frame = self._on_frame
@@ -161,6 +162,12 @@ class Create3Transport(RobotTransport):
         await self._publish_cmd_vel(speed, 0.0)
         while time.monotonic() < deadline:
             await asyncio.sleep(0.05)
+            # Check for hazard — the agent's _hazard_event is set by
+            # emit_hazard → _on_hazard.  If the Create 3 firmware stops
+            # accepting cmd_vel due to a bump, we bail out early.
+            if self.on_hazard is not None and self._hazard_pending:
+                logger.info("Hazard during move_linear — aborting drive")
+                break
             pose = self._node.get_pose()
             if pose is None:
                 continue
@@ -170,6 +177,7 @@ class Create3Transport(RobotTransport):
             if traveled >= target:
                 break
         await self.halt()
+        self._hazard_pending = False
 
     async def rotate(self, angle_deg: float, *, timeout_s: float) -> None:
         """Rotate in place by ``angle_deg`` (positive = left/CCW) using /imu yaw."""
@@ -195,6 +203,9 @@ class Create3Transport(RobotTransport):
         await self._publish_cmd_vel(0.0, speed)
         while time.monotonic() < deadline:
             await asyncio.sleep(0.05)
+            if self._hazard_pending:
+                logger.info("Hazard during rotate — aborting")
+                break
             yaw = self._node.get_yaw()
             if yaw is None:
                 continue
@@ -203,6 +214,7 @@ class Create3Transport(RobotTransport):
             if abs(delta) >= abs(target_delta) - YAW_TOLERANCE_RAD:
                 break
         await self.halt()
+        self._hazard_pending = False
 
     async def teleop_step(self, lin: float, turn: float) -> None:
         """Direct Twist: linear.x = lin * max, angular.z = turn * max."""
@@ -258,8 +270,9 @@ class Create3Transport(RobotTransport):
 
     def _on_ros_hazard(self, event: HazardEvent) -> None:
         """Called from the rclpy thread — forward to the agent via the
-        transport's hazard sink.  Thread-safe: just sets the event, the
-        agent reads it on the next tick."""
+        transport's hazard sink.  Also sets _hazard_pending so move_linear/
+        rotate can abort early."""
+        self._hazard_pending = True
         self.emit_hazard(event)
 
     def _on_ros_battery(self, battery: BatteryState) -> None:
@@ -295,6 +308,11 @@ class _Create3Node:
     ):
         import os
         os.environ.setdefault("ROS_DOMAIN_ID", str(ros_domain_id))
+        # Required for WiFi discovery with the Create 3: the default multicast
+        # discovery doesn't find the robot on some WiFi networks. Setting
+        # ROS_AUTOMATIC_DISCOVERY=false forces unicast discovery which works
+        # reliably. Verified on 192.168.2.0/24 with Create 3 Iron+FastDDS.
+        os.environ.setdefault("ROS_AUTOMATIC_DISCOVERY", "false")
 
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
@@ -342,8 +360,13 @@ class _Create3Node:
         self._audio_pub = None
         try:
             from irobot_create_msgs.msg import LightringLeds, AudioNoteVector
-            self._lightring_pub = self._node.create_publisher(LightringLeds, CMD_LIGHTRING_TOPIC, 10)
-            self._audio_pub = self._node.create_publisher(AudioNoteVector, CMD_AUDIO_TOPIC, 10)
+            from rclpy.qos import QoSProfile, ReliabilityPolicy
+            # /cmd_lightring subscription is BEST_EFFORT on the robot side
+            lightring_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+            self._lightring_pub = self._node.create_publisher(LightringLeds, CMD_LIGHTRING_TOPIC, lightring_qos)
+            # /cmd_audio subscription is RELIABLE on the robot side (ui_mgr)
+            audio_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+            self._audio_pub = self._node.create_publisher(AudioNoteVector, CMD_AUDIO_TOPIC, audio_qos)
         except ImportError:
             logger.warning("irobot_create_msgs not available — LED + audio disabled")
 
@@ -463,8 +486,15 @@ class _Create3Node:
         self._pose_y = msg.pose.pose.position.y
 
     def _battery_cb(self, msg) -> None:
-        pct = int(msg.percentage * 100) if hasattr(msg, 'percentage') else 0
-        self._battery = BatteryState(pct=pct, voltage_v=msg.voltage if hasattr(msg, 'voltage') else None)
+        # percentage is a float 0.0-1.0 in sensor_msgs/BatteryState
+        try:
+            pct = int(round(msg.percentage * 100))
+        except (AttributeError, TypeError):
+            pct = 0
+        self._battery = BatteryState(
+            pct=pct,
+            voltage_v=msg.voltage if hasattr(msg, 'voltage') else None,
+        )
         self._on_battery(self._battery)
 
     def _hazard_cb(self, msg) -> None:
