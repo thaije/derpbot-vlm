@@ -194,6 +194,9 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **LED autonomy**: green=autonomous, blue=teleop, red=bumped, yellow=searching/driving, off=idle. Panel colour picker for manual override.
 - **Audio**: `/cmd_audio` note sequences — found=C-E-G ascending, bump=descending buzz, error=harsh low. Parity with RVR phone beep.
 - **Run**: `python3.12 -m create3_bridge --target X --ros-domain 0 --debug-bus 8770` + `python3.12 -m panel --agent-url ws://localhost:8770 --bind 0.0.0.0:8080`.
+- **`ROS_AUTOMATIC_DISCOVERY=false` required** for WiFi discovery with the Create 3. The default multicast discovery doesn't find the robot on 192.168.2.0/24; unicast discovery works reliably after ~3s. Set as an env var default in `Create3Transport._Create3Node.__init__`.
+- **`/cmd_audio` QoS = RELIABLE** (Create 3 `ui_mgr` subscription is RELIABLE; mismatch silently drops messages). All sensor topics + `/cmd_lightring` = BEST_EFFORT.
+- **Create 3 firmware stops accepting `/cmd_vel` on bump** — the transport's `move_linear`/`rotate` check `_hazard_pending` and abort early so the agent's bump recovery can take over.
 
 ### Command panel (#24)
 - **Separate process** (`python3.12 -m panel`): connects to agent's debug bus (WS `:8770`) and serves browsers (dual-port: WS on `bind_port`, HTTP on `bind_port+1`). websockets v16 doesn't reliably serve HTTP (transport aborted before flush) → stdlib `http.server` in a thread handles static files; WS port is injected into `index.html` as `window.__WS_PORT__`.
