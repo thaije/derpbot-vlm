@@ -1,4 +1,4 @@
-"""CLI entry point for the RVR bridge agent (#21).
+"""CLI entry point for the RVR bridge agent (#21, refactored #25).
 
 Usage:
     python3.12 -m rvr_bridge --target fire_extinguisher --ollama-url http://localhost:11434
@@ -12,9 +12,23 @@ import asyncio
 import logging
 import signal
 import sys
+from dataclasses import dataclass
 
-from .agent import BridgeConfig, RvrAgent
+from robot_agent.base_agent import BaseAgentConfig
+from .agent import RvrAgent
 from .drive_test import restart_app, _pick_device, _ensure_server_url
+from .server import PhoneRelay
+from .transport import RvrTransport
+
+
+@dataclass
+class BridgeConfig(BaseAgentConfig):
+    ws_host: str = "::"  # dual-stack: adb reverse tunnel + OkHttp uses IPv6 ::1
+    ws_port: int = 8765
+    drive_speed_byte: int = 64
+    speed_mps: float = 0.35
+    max_drive_ms: int = 4000
+    bump_threshold_factor: float = 2.5
 
 
 def main() -> None:
@@ -69,7 +83,15 @@ def main() -> None:
         teleop_only=args.teleop_only,
     )
 
-    agent = RvrAgent(config)
+    relay = PhoneRelay(host=config.ws_host, port=config.ws_port)
+    transport = RvrTransport(
+        relay,
+        drive_speed_byte=config.drive_speed_byte,
+        speed_mps=config.speed_mps,
+        max_drive_ms=config.max_drive_ms,
+        bump_threshold_factor=config.bump_threshold_factor,
+    )
+    agent = RvrAgent(config, transport)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

@@ -1,7 +1,8 @@
-"""Debug bus WebSocket server for the RVR agent (#24).
+"""Backend-agnostic debug bus WebSocket server (#25).
 
-Runs inside the agent's asyncio loop. Wires RvrAgent callbacks to a
-WebSocket server that the panel process connects to as a client.
+Generalised from ``rvr_bridge/rvr_debug_bus.py``: exposes ``BaseRealAgent``
+state + commands to a panel client.  The ``hello`` message advertises the
+backend name + capability list so the panel UI can show/hide controls.
 
 Wire protocol (bus → panel, JSON unless noted):
     hello, frame_meta, state, decision, verifier, imu, bump, ble, battery
@@ -9,10 +10,11 @@ Wire protocol (bus → panel, JSON unless noted):
 
 Wire protocol (panel → bus, JSON):
     teleop {x, y}, stop, manual_query, toggle {which, value?},
-    set_target {target, description?}, rvr {cmd}, get_state, get_frame
+    set_target {target, description?}, robot {cmd}, get_state, get_frame
 
-The bus holds zero domain logic — it translates between RvrAgent methods
-and the wire protocol. All prompts/schema/verifier stay in shared/ + agent/.
+The bus holds zero domain logic — it translates between agent methods and
+the wire protocol.  All prompts/schema/verifier stay in ``shared/`` +
+``agent/``.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import io
 import json
 import logging
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from PIL import Image
 from websockets.asyncio.server import ServerConnection
@@ -34,11 +36,11 @@ logger = logging.getLogger(__name__)
 FRAME_PREFIX = b"\x01"  # binary frame marker
 
 
-class RvrDebugBus:
-    """WebSocket server exposing RvrAgent state + commands to a panel client.
+class DebugBus:
+    """WebSocket server exposing a ``BaseRealAgent`` to a panel client.
 
-    Usage (inside agent.run(), after RvrAgent is constructed):
-        bus = RvrDebugBus(agent, host="0.0.0.0", port=8770)
+    Usage (inside agent.run(), after the agent is constructed):
+        bus = DebugBus(agent, host="0.0.0.0", port=8770)
         await bus.start()
         # ... agent loop runs normally; bus pushes events as they arrive
         await bus.stop()
@@ -66,7 +68,6 @@ class RvrDebugBus:
         logger.info("Debug bus stopped")
 
     def _wire_agent_callbacks(self) -> None:
-        """Wire RvrAgent callback hooks to bus publish methods."""
         self.agent.on_frame = self._on_agent_frame
         self.agent.on_decision = self._on_agent_decision
         self.agent.on_verifier = self._on_agent_verifier
@@ -136,14 +137,7 @@ class RvrDebugBus:
         self._clients.add(ws)
         logger.info("Panel client connected from %s", ws.remote_address)
         try:
-            # Send hello + last known state/frame
-            hello = {
-                "type": "hello",
-                "backend": "rvr",
-                "capabilities": ["teleop", "manual_query", "stop",
-                                 "set_target", "toggle", "rvr"],
-                "teleop_schema": "normalized",
-            }
+            hello = self._build_hello()
             await ws.send(json.dumps(hello))
             if self._last_state:
                 await ws.send(json.dumps({"type": "state", **self._last_state}))
@@ -160,9 +154,27 @@ class RvrDebugBus:
             self._clients.discard(ws)
             logger.info("Panel client disconnected")
 
-    async def _handle_message(self, ws: ServerConnection, raw: Any) -> None:
+    def _build_hello(self) -> dict:
+        """Build the hello message with backend name + capabilities.
+
+        Capabilities are derived from the transport's feature flags.  The
+        panel uses these to show/hide UI controls.
+        """
+        t = self.agent.transport
+        caps = ["teleop", "manual_query", "stop", "set_target", "toggle"]
+        # Backend-specific capabilities — queried from the transport
+        backend_caps = getattr(t, "capabilities", [])
+        caps.extend(backend_caps)
+        return {
+            "type": "hello",
+            "backend": t.backend_name,
+            "capabilities": caps,
+            "teleop_schema": "normalized",
+        }
+
+    async def _handle_message(self, ws: ServerConnection, raw) -> None:
         if isinstance(raw, bytes):
-            return  # browser shouldn't send binary; ignore
+            return
 
         try:
             msg = json.loads(raw)
@@ -189,13 +201,19 @@ class RvrDebugBus:
                     msg.get("target", ""),
                     msg.get("description", ""),
                 )
-            elif mtype == "rvr":
-                await self._cmd_rvr(msg)
+            elif mtype in ("robot", "rvr"):
+                # "rvr" kept for back-compat with existing panel HTML
+                await self._cmd_robot(msg)
             elif mtype == "torch":
-                await self.agent.set_torch(msg.get("on", False))
+                await self.agent.set_status("torch", on=msg.get("on", False))
             elif mtype == "beep":
                 await self.agent.beep(msg.get("beep_type", "found"),
-                                      msg.get("volume", 80))
+                                      volume=msg.get("volume", 80))
+            elif mtype == "led":
+                await self.agent.set_status("led",
+                                            r=msg.get("r", 0),
+                                            g=msg.get("g", 0),
+                                            b=msg.get("b", 0))
             elif mtype == "get_state":
                 await ws.send(json.dumps({"type": "state",
                                           **self.agent._state_snapshot()}))
@@ -213,25 +231,25 @@ class RvrDebugBus:
         x = float(msg.get("x", 0.0))
         y = float(msg.get("y", 0.0))
         # x = turn (-1 left, +1 right), y = forward (-1 reverse, +1 forward)
-        # RVR heading increases clockwise (right), so +x → +heading
         self.agent.teleop_drive(lin=y, turn=x)
 
-    async def _cmd_rvr(self, msg: dict) -> None:
-        from .protocol import (DriveMessage, ResetYawMessage, SleepMessage,
-                               WakeMessage, GetBatteryMessage)
+    async def _cmd_robot(self, msg: dict) -> None:
+        """Handle backend-specific robot commands.
+
+        The agent's transport handles unknown cmds gracefully.  Known cmds
+        that require agent-level state (e.g. reset_yaw zeroing the heading
+        counter) are handled here.
+        """
         cmd = msg.get("cmd", "")
-        if cmd == "wake":
-            await self.agent.relay.send(WakeMessage())
-        elif cmd == "sleep":
-            await self.agent.relay.send(SleepMessage())
-        elif cmd == "reset_yaw":
-            await self.agent.relay.send(ResetYawMessage())
+        if cmd == "reset_yaw":
+            await self.agent.transport.set_status("reset_yaw")
             self.agent._desired_heading = 0
             self.agent._emit_state()
         elif cmd == "get_battery":
-            await self.agent.relay.send(GetBatteryMessage())
+            await self.agent.transport.set_status("get_battery")
         else:
-            logger.warning("Unknown rvr cmd: %s", cmd)
+            # Forward to transport as a generic status command
+            await self.agent.transport.set_status(cmd)
 
     # ── Broadcast helpers ───────────────────────────────────────────────
 
