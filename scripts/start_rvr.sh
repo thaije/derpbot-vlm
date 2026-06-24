@@ -27,13 +27,13 @@ cleanup() {
   tmux kill-session -t rvr 2>/dev/null || true
   tmux kill-session -t panel 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup INT TERM
 
 # Kill any existing sessions
 cleanup
 
 echo ">>> Starting RVR agent (teleop mode, debug bus :$DEBUG_BUS_PORT)..."
-tmux new -s rvr -d "$VENV -m rvr_bridge $TELEOP_ONLY --debug-bus $DEBUG_BUS_PORT"
+tmux new -s rvr -d "$VENV -m rvr_bridge --target teleop $TELEOP_ONLY --debug-bus $DEBUG_BUS_PORT"
 
 echo ">>> Starting command panel (HTTP :$PANEL_HTTP_PORT, WS :$((PANEL_HTTP_PORT+1)))..."
 tmux new -s panel -d "$VENV -m panel --agent-url ws://localhost:$DEBUG_BUS_PORT --bind 0.0.0.0:$PANEL_HTTP_PORT"
