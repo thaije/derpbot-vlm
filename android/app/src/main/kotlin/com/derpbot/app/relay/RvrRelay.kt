@@ -27,6 +27,7 @@ class RvrRelay(
     private val connection: RvrBleConnection,
     private val commands: RvrCommands,
     private val serverUrl: String,
+    private val cameraOnly: Boolean = false,
     private val onEvent: (String) -> Unit,
 ) {
     private val client = OkHttpClient.Builder()
@@ -113,38 +114,50 @@ class RvrRelay(
         when (cmd) {
             is CaptureFrameCommand -> scope.launch { sendFrame() }
             is DriveCommand -> {
+                if (cameraOnly) return  // no-op: no BLE in camera-only mode
                 connection.send(commands.driveWithHeading(cmd.speed, cmd.heading, cmd.flags))
                 onEvent("DRIVE speed=${cmd.speed} hdg=${cmd.heading}")
             }
             is RawMotorsCommand -> {
+                if (cameraOnly) return
                 connection.send(commands.setRawMotors(cmd.lMode, cmd.lSpeed, cmd.rMode, cmd.rSpeed))
             }
             is StopCommand -> {
+                if (cameraOnly) return
                 connection.send(commands.stop(cmd.heading))
                 onEvent("STOP hdg=${cmd.heading}")
             }
             is WakeCommand -> {
+                if (cameraOnly) return
                 connection.send(commands.wake())
                 onEvent("WAKE")
             }
             is SleepCommand -> {
+                if (cameraOnly) return
                 connection.send(commands.sleep())
                 onEvent("SLEEP")
             }
             is ResetYawCommand -> {
+                if (cameraOnly) return
                 connection.send(commands.resetYaw())
                 onEvent("RESET_YAW")
             }
             is GetBatteryCommand -> {
+                if (cameraOnly) return
                 connection.send(commands.getBatteryPercentage())
             }
             is GetBleStateCommand -> {
-                sendBleState(connection.currentState.name.lowercase())
+                if (cameraOnly) {
+                    sendBleState("disabled")
+                } else {
+                    sendBleState(connection.currentState.name.lowercase())
+                }
             }
             is GetPhoneBatteryCommand -> {
                 sendPhoneBattery()
             }
             is TorchCommand -> {
+                if (cameraOnly) return
                 camera.enableTorch(cmd.on)
                 onEvent("TORCH ${if (cmd.on) "ON" else "OFF"}")
             }

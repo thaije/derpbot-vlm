@@ -1,15 +1,29 @@
 #!/usr/bin/env bash
 # Build and deploy the Android relay app to a connected device.
-# Usage: ./deploy.sh [server_url]
+# Usage: ./deploy.sh [server_url] [--camera-only]
 #   server_url: default WebSocket URL to embed in the app (default: auto-detected laptop IP:8765)
+#   --camera-only: launch in camera-only mode (skip BLE — for Create 3 backend #25)
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Parse args: separate --camera-only flag from server_url
+CAMERA_ONLY=false
+SERVER_URL_ARG=""
+for arg in "$@"; do
+  case "$arg" in
+    --camera-only) CAMERA_ONLY=true ;;
+    *) SERVER_URL_ARG="$arg" ;;
+  esac
+done
+
 # Auto-detect laptop WiFi IP (prefer non-VPN interface)
 DEFAULT_IP=$(ip -4 addr show | grep -oP 'inet\s+\K[0-9.]+' | grep -v '127.0.0.1' | grep -v '^10\.' | head -1)
-SERVER_URL="${1:-ws://${DEFAULT_IP}:8765}"
+SERVER_URL="${SERVER_URL_ARG:-ws://${DEFAULT_IP}:8765}"
 echo ">>> Default server URL: $SERVER_URL"
+if [ "$CAMERA_ONLY" = true ]; then
+  echo ">>> Camera-only mode enabled (no BLE — for Create 3 backend)"
+fi
 
 # Update default URL in RelayActivity.kt
 ACTIVITY="app/src/main/kotlin/com/derpbot/app/RelayActivity.kt"
@@ -55,7 +69,14 @@ adb -s "$SERIAL" install -r "$APK" 2>&1 || {
 }
 
 echo ">>> Waking screen for BLE scan phase (Samsung throttles unfiltered scans with screen off despite foreground service)..."
-adb -s "$SERIAL" shell input keyevent KEYCODE_WAKEUP
+if [ "$CAMERA_ONLY" = false ]; then
+  adb -s "$SERIAL" shell input keyevent KEYCODE_WAKEUP
+fi
 echo ">>> Starting app (screen dims naturally; foreground service keeps BLE alive once connected)..."
-adb -s "$SERIAL" shell am start -n com.derpbot.app/.RelayActivity
+if [ "$CAMERA_ONLY" = true ]; then
+  adb -s "$SERIAL" shell am start -n com.derpbot.app/.RelayActivity \
+    --ez camera_only true --es server_url "$SERVER_URL"
+else
+  adb -s "$SERIAL" shell am start -n com.derpbot.app/.RelayActivity
+fi
 echo ">>> Done!"

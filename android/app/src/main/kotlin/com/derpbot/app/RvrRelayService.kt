@@ -45,6 +45,12 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
 
     private var cameraBound = false
 
+    /** Camera-only mode (#25): skip BLE, stream frames + IMU only.
+     *  Set via EXTRA_CAMERA_ONLY intent extra. Drive/motor commands are
+     *  no-op'd; ble_state reports "disabled" so the Python agent knows. */
+    @Volatile var cameraOnly: Boolean = false
+        private set
+
     private val prefs: SharedPreferences by lazy {
         getSharedPreferences("rvr_relay", Context.MODE_PRIVATE)
     }
@@ -81,8 +87,11 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
-            ACTION_START -> startRelay(intent.getStringExtra(EXTRA_SERVER_URL)
-                ?: prefs.getString("server_url", DEFAULT_URL)!!)
+            ACTION_START -> {
+                cameraOnly = intent.getBooleanExtra(EXTRA_CAMERA_ONLY, false)
+                startRelay(intent.getStringExtra(EXTRA_SERVER_URL)
+                    ?: prefs.getString("server_url", DEFAULT_URL)!!)
+            }
             ACTION_STOP -> stopRelay()
         }
         return START_STICKY
@@ -92,7 +101,13 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         prefs.edit().putString("server_url", url).apply()
         ensureForeground()
         if (relay != null) return
-        connection.startScanAndConnect()
+        if (cameraOnly) {
+            bleState = "disabled"
+            statusText = "derpbot relay — camera-only (no BLE)"
+            Log.i(TAG, "Camera-only mode: skipping BLE scan/connect")
+        } else {
+            connection.startScanAndConnect()
+        }
         bindCameraOnce()
         relay = RvrRelay(
             scope = lifecycleScope,
@@ -101,16 +116,18 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
             connection = connection,
             commands = commands,
             serverUrl = url,
+            cameraOnly = cameraOnly,
             onEvent = { msg -> runOnUiThread { appendLog(msg) } },
         ).also { it.start() }
-        statusText = "derpbot relay — running"
+        statusText = if (cameraOnly) "derpbot relay — camera-only running"
+                     else "derpbot relay — running"
         notifyUi()
     }
 
     fun stopRelay() {
         relay?.stop()
         relay = null
-        connection.send(commands.stop())
+        if (!cameraOnly) connection.send(commands.stop())
         statusText = "derpbot relay — stopped"
         notifyUi()
     }
@@ -118,14 +135,14 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
     fun disconnect() {
         relay?.stop()
         relay = null
-        connection.disconnect()
+        if (!cameraOnly) connection.disconnect()
         statusText = "derpbot relay — disconnected"
         notifyUi()
     }
 
     override fun onDestroy() {
         relay?.stop()
-        connection.disconnect()
+        if (!cameraOnly) connection.disconnect()
         super.onDestroy()
     }
 
@@ -221,5 +238,6 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         const val ACTION_START = "com.derpbot.app.START"
         const val ACTION_STOP = "com.derpbot.app.STOP"
         const val EXTRA_SERVER_URL = "server_url"
+        const val EXTRA_CAMERA_ONLY = "camera_only"
     }
 }

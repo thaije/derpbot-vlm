@@ -90,12 +90,15 @@ class RelayActivity : AppCompatActivity() {
      * starts the service. This keeps `drive_test.py`'s no-touch restart working.
      */
     private fun autoStartIfReady() {
+        val cameraOnly = getIntent().getBooleanExtra(RvrRelayService.EXTRA_CAMERA_ONLY, false)
         val perms = mutableListOf(Manifest.permission.CAMERA)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            perms += Manifest.permission.BLUETOOTH_SCAN
-            perms += Manifest.permission.BLUETOOTH_CONNECT
-        } else {
-            perms += Manifest.permission.ACCESS_FINE_LOCATION
+        if (!cameraOnly) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                perms += Manifest.permission.BLUETOOTH_SCAN
+                perms += Manifest.permission.BLUETOOTH_CONNECT
+            } else {
+                perms += Manifest.permission.ACCESS_FINE_LOCATION
+            }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms += Manifest.permission.POST_NOTIFICATIONS
@@ -157,7 +160,10 @@ class RelayActivity : AppCompatActivity() {
         }
         controls.addView(serverInput)
 
-        controls.addView(button("Connect BLE + camera + start relay") { startRelay() })
+        val cameraOnly = getIntent().getBooleanExtra(RvrRelayService.EXTRA_CAMERA_ONLY, false)
+        controls.addView(button(
+            if (cameraOnly) "Start camera-only relay" else "Connect BLE + camera + start relay"
+        ) { startRelay() })
         controls.addView(button("STOP") { service?.stopRelay() })
         controls.addView(button("Disconnect") { service?.disconnect() })
 
@@ -199,12 +205,15 @@ class RelayActivity : AppCompatActivity() {
     }
 
     private fun requestPermissionsThenStart() {
+        val cameraOnly = getIntent().getBooleanExtra(RvrRelayService.EXTRA_CAMERA_ONLY, false)
         val perms = mutableListOf(Manifest.permission.CAMERA)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            perms += Manifest.permission.BLUETOOTH_SCAN
-            perms += Manifest.permission.BLUETOOTH_CONNECT
-        } else {
-            perms += Manifest.permission.ACCESS_FINE_LOCATION
+        if (!cameraOnly) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                perms += Manifest.permission.BLUETOOTH_SCAN
+                perms += Manifest.permission.BLUETOOTH_CONNECT
+            } else {
+                perms += Manifest.permission.ACCESS_FINE_LOCATION
+            }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms += Manifest.permission.POST_NOTIFICATIONS
@@ -218,6 +227,9 @@ class RelayActivity : AppCompatActivity() {
         val intent = Intent(this, RvrRelayService::class.java)
             .setAction(RvrRelayService.ACTION_START)
             .putExtra(RvrRelayService.EXTRA_SERVER_URL, url)
+        // Forward camera_only flag from the launch intent (deploy.sh --camera-only)
+        intent.putExtra(RvrRelayService.EXTRA_CAMERA_ONLY,
+            getIntent().getBooleanExtra(RvrRelayService.EXTRA_CAMERA_ONLY, false))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
