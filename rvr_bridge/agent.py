@@ -19,8 +19,8 @@ from typing import Any, Callable, Optional
 from PIL import Image
 
 from .bump_detect import BumpDetector, BumpEvent
-from .protocol import (DriveMessage, GetBleStateMessage, ResetYawMessage,
-                        SleepMessage, StopMessage, WakeMessage)
+from .protocol import (DriveMessage, GetBleStateMessage, RawMotorsMessage,
+                        ResetYawMessage, SleepMessage, StopMessage, WakeMessage)
 from .server import PhoneRelay
 
 logger = logging.getLogger(__name__)
@@ -287,18 +287,27 @@ class RvrAgent:
             )
             self._emit_state()
 
-            await self._execute_drive(decision.drive_distance_m)
+            await self._execute_drive(decision.drive_distance_m, decision.turn_angle_deg)
 
             await asyncio.sleep(self.config.vlm_interval_s)
 
-    async def _execute_drive(self, distance_m: float) -> None:
+    async def _execute_drive(self, distance_m: float, turn_angle_deg: int = 0) -> None:
         if distance_m <= 0.0:
-            # Turn only: use high speed so the motors have enough torque to
-            # rotate the chassis (speed=0 causes stalling).
-            await self.relay.send(DriveMessage(
-                speed=200,
-                heading=self._desired_heading, flags=DRIVE_FLAGS_FORWARD
-            ))
+            # Turn only: use raw_motors with opposite wheel directions for
+            # true in-place pivot. driveWithHeading drives one track forward
+            # while the other drags — not a pivot turn.
+            turn_speed = 100
+            if turn_angle_deg > 0:
+                # Turn right: left forward, right reverse
+                await self.relay.send(RawMotorsMessage(
+                    l_mode=1, l_speed=turn_speed, r_mode=2, r_speed=turn_speed))
+            elif turn_angle_deg < 0:
+                # Turn left: left reverse, right forward
+                await self.relay.send(RawMotorsMessage(
+                    l_mode=2, l_speed=turn_speed, r_mode=1, r_speed=turn_speed))
+            else:
+                # No turn, no drive — stop
+                await self.relay.send(StopMessage(heading=self._desired_heading))
             return
 
         duration_ms = min(
@@ -480,19 +489,25 @@ class RvrAgent:
         lin = self._teleop_lin
         turn = self._teleop_turn
 
-        # Turning: continuously advance the heading target (hold to rotate)
-        # Use a high speed so the firmware's yaw controller has enough motor
-        # torque to overcome wheel-scrub friction during pivot turns.
-        # speed=0 caused stalling → motor thermal protection errors.
+        # Turning: use raw_motors with opposite wheel directions for true
+        # in-place pivot. driveWithHeading(speed>0, heading) drives one track
+        # forward while the other drags — not a pivot turn. raw_motors with
+        # left=FORWARD + right=REVERSE (or vice versa) spins both wheels
+        # equally in opposite directions = true rotation about the centre.
+        # Speed must be high enough to overcome wheel-scrub friction (64 stalls).
         if abs(turn) > 0.05 and abs(lin) < 0.05:
             self._desired_heading = self._norm_heading(
                 self._desired_heading + int(turn * TELEOP_TURN_DEG_PER_TICK)
             )
-            await self.relay.send(DriveMessage(
-                speed=max(int(abs(turn) * self.config.drive_speed_byte), 200),
-                heading=self._desired_heading,
-                flags=DRIVE_FLAGS_FORWARD,
-            ))
+            turn_speed = max(int(abs(turn) * 100), 80)
+            if turn > 0:
+                # Turn right: left forward, right reverse
+                await self.relay.send(RawMotorsMessage(
+                    l_mode=1, l_speed=turn_speed, r_mode=2, r_speed=turn_speed))
+            else:
+                # Turn left: left reverse, right forward
+                await self.relay.send(RawMotorsMessage(
+                    l_mode=2, l_speed=turn_speed, r_mode=1, r_speed=turn_speed))
             return
 
         # Forward/backward: driveWithHeading (hold to drive)

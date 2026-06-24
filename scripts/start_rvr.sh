@@ -27,7 +27,7 @@ cleanup() {
   tmux kill-session -t rvr 2>/dev/null || true
   tmux kill-session -t panel 2>/dev/null || true
 }
-trap cleanup INT TERM
+trap cleanup INT TERM EXIT
 
 # Kill any existing sessions
 cleanup
@@ -59,6 +59,6 @@ echo "    Logs:   tmux capture-pane -t rvr -p -S -50"
 echo "    Stop:   Ctrl+C"
 echo ""
 
-# Wait for Ctrl+C
+# Block until Ctrl+C
 echo ">>> Waiting... (Ctrl+C to stop)"
-wait
+tail -f /dev/null
