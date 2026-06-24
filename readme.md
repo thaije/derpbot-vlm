@@ -107,10 +107,13 @@ python3.12 -m agent.agent_node --config config/vlm_config_cloud.yaml --save-fram
 
 ## Command panel (real robot)
 
-A web UI for observing the VLM loop live and teleoperating the RVR. Watch the
+A web UI for observing the VLM loop live and teleoperating the robot. Watch the
 camera feed, see VLM decisions and verifier verdicts in real time, and drive
 the robot with keyboard or on-screen joystick. Separate process — reload the
-browser without disturbing a live run.
+browser without disturbing a live run. Backend-agnostic: works with both the
+Sphero RVR and the iRobot Create 3.
+
+### RVR backend
 
 ```bash
 # Terminal 1: RVR agent + debug bus (teleop-only = robot won't move on its own)
@@ -127,6 +130,26 @@ python3.12 -m panel --agent-url ws://localhost:8770 --bind 0.0.0.0:8080
 loop paused — the robot wakes up and zero-headings but never drives on its own.
 The panel owns all movement. Toggle teleop off from the panel to let the agent
 run autonomously.
+
+### Create 3 backend
+
+```bash
+# Terminal 1: Create 3 agent + debug bus (teleop-only)
+#   Requires: source /opt/ros/jazzy/setup.bash
+#   Requires: phone in camera-only mode (cd android && ./deploy.sh --camera-only)
+python3.12 -m create3_bridge --target fire_extinguisher \
+    --ros-domain 0 --teleop-only --debug-bus 8770
+
+# Terminal 2: panel process (same as RVR)
+python3.12 -m panel --agent-url ws://localhost:8770 --bind 0.0.0.0:8080
+
+# Browser → http://<laptop-ip>:8081   (shows LED colour picker + dock buttons instead of torch/wake)
+```
+
+The Create 3 connects via ROS 2 (`/cmd_vel`, `/imu`, `/odom`,
+`/hazard_detection`, `/battery_state`). The camera comes from the same Android
+phone in camera-only mode (no BLE). The panel adapts its UI based on the
+backend's advertised capabilities.
 
 | Key | Action |
 |-----|--------|
