@@ -6,9 +6,11 @@
 # Requires: ADB device connected (USB or WiFi), Ollama running on localhost:11434.
 # Press Ctrl+C to stop everything (tmux sessions are killed on exit).
 set -euo pipefail
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT"
 
-VENV=".venv/bin/python"
+VENV="$ROOT/.venv/bin/python"
 PYFLAGS=""
 TELEOP_ONLY="--teleop-only"
 DEBUG_BUS_PORT=8770
@@ -58,4 +60,5 @@ echo "    Stop:   Ctrl+C"
 echo ""
 
 # Wait for Ctrl+C
+echo ">>> Waiting... (Ctrl+C to stop)"
 wait
