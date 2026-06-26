@@ -56,9 +56,15 @@ class RvrAgent(BaseRealAgent):
         return False
 
     async def _on_connected(self) -> None:
-        """RVR: wait for BLE ready, then wake + reset_yaw."""
+        """RVR: wait for BLE ready, then wake + reset_yaw.
+
+        In teleop-only mode we skip the blocking BLE-ready wait (camera works
+        without BLE), but still fire a one-shot ``get_ble_state`` so the
+        panel's robot-icon reflects the phone's BLE link promptly.
+        """
         if self._teleop_only:
             logger.info("Teleop-only: skipping BLE wait (camera-only ok)")
+            await self.rvr_transport.relay.send(GetBleStateMessage())
             return
 
         logger.info("Phone connected. Waiting for BLE ready...")
@@ -79,10 +85,14 @@ class RvrAgent(BaseRealAgent):
             logger.info("BLE not ready (RVR unavailable). Camera-only mode.")
 
     async def _poll_battery(self) -> None:
-        """Request battery % from the phone every 60 s.
+        """Request battery % + BLE state from the phone every 60 s.
 
-        The phone only sends ``battery`` messages in response to
-        ``get_battery`` commands.
+        The phone only sends ``battery``/``ble_state`` messages in response
+        to the corresponding ``get_*`` commands (or proactively on a state
+        *change*). In teleop-only mode the agent never enters ``_on_connected``
+        (which is where the BLE-ready poll loop lives), so we poll BLE state
+        here too — otherwise the panel's robot-icon stays "disconnected"
+        even though the phone's BLE link is up.
         """
         now = time.monotonic()
         if now - self._last_battery_poll < 60.0:
@@ -90,6 +100,7 @@ class RvrAgent(BaseRealAgent):
         self._last_battery_poll = now
         await self.rvr_transport.relay.send(GetBatteryMessage())
         await self.rvr_transport.relay.send(GetPhoneBatteryMessage())
+        await self.rvr_transport.relay.send(GetBleStateMessage())
 
     def _on_imu(self, msg) -> None:
         """Forward IMU data to the panel."""

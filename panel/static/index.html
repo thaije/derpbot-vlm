@@ -559,6 +559,7 @@ const wsUrl = `${wsProtocol}//${wsHost}:${WS_PORT}/`;
 let ws = null;
 let wsConnected = false;
 let busConnected = false;
+let phoneConnected = false;
 let currentBackend = '?';
 let currentCapabilities = new Set();
 
@@ -673,6 +674,11 @@ function updateState(msg) {
   // Update robot connection state (BLE for RVR, connection_state for Create 3)
   const connState = msg.ble_state || msg.connection_state || 'disconnected';
   updateBLE(connState);
+  // Phone→agent WebSocket link (distinct from browser→panel WS).
+  if (msg.phone_connected !== undefined) {
+    phoneConnected = !!msg.phone_connected;
+    updateStatusDots();
+  }
   updateBattery(msg.battery_pct);
   document.getElementById('toggle-bump').checked = msg.bump_enabled !== false;
   // Sync mode switch from agent state
@@ -738,7 +744,6 @@ function updatePhoneBattery(pct) {
 const MAX_MSGS = 200;
 let currentTarget = null;
 let currentTargetDesc = null;
-let currentBackend = null;
 
 function updateStatusLabel() {
   const el = document.getElementById('status-label');
@@ -832,9 +837,15 @@ function addLog(level, msg) {
 function updateStatusDots() {
   const icon = document.getElementById('phone-icon');
   icon.classList.remove('ok', 'warn', 'err');
-  const state = wsConnected ? 'ok' : 'err';
+  // The phone-icon reflects the phone→agent relay link (reported by the
+  // agent in state.phone_connected). If we have no data yet, fall back to
+  // the browser→panel WS state so the dot isn't blank on first load.
+  let state, label;
+  if (phoneConnected) { state = 'ok'; label = 'connected'; }
+  else if (wsConnected) { state = 'warn'; label = 'panel-only (phone offline)'; }
+  else { state = 'err'; label = 'disconnected'; }
   icon.classList.add(state);
-  icon.setAttribute('data-tooltip', `Phone websocket: ${wsConnected ? 'connected' : 'disconnected'}`);
+  icon.setAttribute('data-tooltip', `Phone relay: ${label}`);
 }
 
 // ── Send commands ─────────────────────────────────────────────────

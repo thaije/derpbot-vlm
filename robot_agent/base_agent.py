@@ -114,6 +114,10 @@ class BaseRealAgent:
 
         # Wire transport hazard sink → agent
         self.transport.on_hazard = self._on_hazard
+        # Back-reference so transports can emit BLE/battery state changes
+        # and trigger a state snapshot for the panel (teleop-only mode only
+        # emits state once at startup; relay callbacks need to refresh it).
+        self.transport._agent = self
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 

@@ -98,6 +98,26 @@ class RvrTransport(RobotTransport):
     def has_hazard_sensor(self) -> bool:
         return False
 
+    # ── Heading helpers (dead-reckoned counter lives on the agent) ──────
+
+    def _agent_heading(self) -> int:
+        """Read the agent's dead-reckoned heading counter."""
+        a = getattr(self, "_agent", None)
+        if a is not None and a._desired_heading is not None:
+            return a._desired_heading
+        return 0
+
+    def _agent_set_heading(self, h: int) -> int:
+        """Write back the heading counter and return it."""
+        a = getattr(self, "_agent", None)
+        if a is not None and a._desired_heading is not None:
+            a._desired_heading = h
+        return h
+
+    @staticmethod
+    def _norm_heading(h: int) -> int:
+        return h % 360
+
     async def start(self) -> None:
         await self.relay.start()
 
@@ -158,27 +178,35 @@ class RvrTransport(RobotTransport):
     async def teleop_step(self, lin: float, turn: float) -> None:
         """One tick of teleop drive (~20 Hz).  Both zero → halt.
 
-        Turn: raw_motors opposite wheels for true pivot.
-        Linear: driveWithHeading at proportional speed.
+        Uses ``driveWithHeading`` (closed-loop) for everything — the RVR's
+        internal yaw-hold fights open-loop ``raw_motors``, causing the body
+        to snap back when the key is released.  Turning is done by
+        incrementing the dead-reckoned heading counter each tick and letting
+        the firmware's controller rotate to it.
         """
-        if abs(turn) > 0.05 and abs(lin) < 0.05:
-            turn_speed = max(int(abs(turn) * 100), 80)
-            if turn > 0:
-                await self.relay.send(RawMotorsMessage(
-                    l_mode=2, l_speed=turn_speed, r_mode=1, r_speed=turn_speed))
-            else:
-                await self.relay.send(RawMotorsMessage(
-                    l_mode=1, l_speed=turn_speed, r_mode=2, r_speed=turn_speed))
-            return
+        heading = self._agent_heading()
+
+        if abs(turn) > 0.05:
+            # Increment the heading target so the RVR's closed-loop controller
+            # rotates to it.  5°/tick at 20 Hz ≈ 100°/s, scaled by turn magnitude.
+            delta = int(TELEOP_TURN_DEG_PER_TICK * turn)
+            heading = self._agent_set_heading(
+                self._norm_heading(heading + delta))
 
         if abs(lin) > 0.05:
             speed = max(int(abs(lin) * self.drive_speed_byte), 1)
             flags = DRIVE_FLAGS_REVERSE if lin < 0 else DRIVE_FLAGS_FORWARD
             await self.relay.send(DriveMessage(
-                speed=speed, heading=0, flags=flags))
+                speed=speed, heading=heading, flags=flags))
             return
 
-        await self.relay.send(StopMessage(heading=0))
+        if abs(turn) > 0.05:
+            # Turn only: speed 0 holds the heading while rotating to it.
+            await self.relay.send(DriveMessage(
+                speed=0, heading=heading, flags=DRIVE_FLAGS_FORWARD))
+            return
+
+        await self.relay.send(StopMessage(heading=heading))
 
     async def halt(self) -> None:
         await self.relay.send(StopMessage(heading=0))
@@ -233,14 +261,23 @@ class RvrTransport(RobotTransport):
 
     def _on_ble_state(self, msg) -> None:
         logger.info("BLE state: %s", msg.state)
+        # Push to the agent's BLE event callback (→ panel) and emit a fresh
+        # state snapshot so the panel reflects the new link state immediately.
+        if hasattr(self, '_agent') and self._agent is not None:
+            self._agent.on_ble_event({'state': msg.state})
+            self._agent._emit_state()
 
     def _on_battery(self, msg) -> None:
         logger.info("RVR battery: %d%%", msg.pct)
         self._rvr_battery = BatteryState(pct=msg.pct)
+        if hasattr(self, '_agent') and self._agent is not None:
+            self._agent.on_battery_event({'pct': msg.pct})
 
     def _on_phone_battery(self, msg) -> None:
         logger.info("Phone battery: %d%%", msg.pct)
         self._phone_battery_pct = msg.pct
+        if hasattr(self, '_agent') and self._agent is not None:
+            self._agent.on_phone_battery_event({'pct': msg.pct})
 
     def _on_frame(self, img: Image.Image) -> None:
         self._latest_frame = img

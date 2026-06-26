@@ -60,6 +60,9 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         private set
     @Volatile var bleState: String = "idle"
         private set
+    /** True while the WebSocket relay link to the laptop is open. */
+    @Volatile var wsConnected: Boolean = false
+        private set
 
     private val _logLines: MutableList<String> = mutableListOf()
     val logLines: List<String> get() = _logLines
@@ -118,6 +121,7 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
             serverUrl = url,
             cameraOnly = cameraOnly,
             onEvent = { msg -> runOnUiThread { appendLog(msg) } },
+            onWsState = { ok -> runOnUiThread { wsConnected = ok; refreshStatus() } },
         ).also { it.start() }
         statusText = if (cameraOnly) "derpbot relay — camera-only running"
                      else "derpbot relay — running"
@@ -150,10 +154,9 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
 
     override fun onStateChange(state: RvrBleConnection.State) {
         bleState = state.name.lowercase()
-        statusText = "BLE: $state"
         relay?.sendBleState(state.name.lowercase())
         if (state == RvrBleConnection.State.READY) connection.send(commands.wake())
-        notifyUi()
+        runOnUiThread { refreshStatus() }
     }
 
     override fun onPacket(packet: Packet) {
@@ -215,6 +218,18 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
     }
 
     // --- UI plumbing -------------------------------------------------------
+
+    /**
+     * Build a single status line showing both link states, e.g.:
+     *   "BLE: ready  ·  WS: connected"
+     * Camera-only mode reports BLE as "disabled".
+     */
+    private fun refreshStatus() {
+        val bleLabel = if (cameraOnly) "disabled" else bleState
+        val wsLabel = if (wsConnected) "connected" else "disconnected"
+        statusText = "BLE: $bleLabel  ·  WS: $wsLabel"
+        notifyUi()
+    }
 
     private fun appendLog(msg: String) {
         _logLines += "• $msg"

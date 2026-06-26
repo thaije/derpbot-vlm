@@ -72,9 +72,33 @@ class RvrBleConnection(
 
     @SuppressLint("MissingPermission")
     fun startScanAndConnect() {
+        if (adapter == null) {
+            listener.onError("Bluetooth not available on this device")
+            state = State.IDLE
+            return
+        }
+        if (!adapter!!.isEnabled) {
+            // Try to enable BT automatically. Requires BLUETOOTH_CONNECT on API 31+,
+            // which is already in the activity's permission set. If the system
+            // blocks the request (e.g. device policy), surface a clear error so
+            // the user knows to turn Bluetooth on manually.
+            val enabled = try { adapter!!.enable() } catch (e: SecurityException) {
+                Log.w(TAG, "enable() blocked: ${e.message}")
+                false
+            }
+            if (!enabled) {
+                listener.onError("Bluetooth is off — enable it in Settings")
+                state = State.IDLE
+                return
+            }
+            // adapter.enable() is async; give the stack a moment to come up.
+            main.postDelayed({ startScanAndConnect() }, 1500)
+            return
+        }
         val scanner = adapter?.bluetoothLeScanner
         if (scanner == null) {
-            listener.onError("Bluetooth unavailable or off")
+            listener.onError("Bluetooth scanner unavailable (BT off?)")
+            state = State.IDLE
             return
         }
         state = State.SCANNING

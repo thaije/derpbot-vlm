@@ -40,10 +40,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-service:2.8.4")
     implementation("com.google.android.material:material:1.12.0")
 
-    // Step 2 — CameraX
-    implementation("androidx.camera:camera-core:1.3.4")
-    implementation("androidx.camera:camera-camera2:1.3.4")
-    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    // Step 2 — CameraX (1.4+ ships 16 KB page-size aligned native libs)
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
 
     // WebSocket client (OkHttp) for relay connection to computer (#21)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

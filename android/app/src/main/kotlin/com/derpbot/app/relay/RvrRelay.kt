@@ -29,6 +29,7 @@ class RvrRelay(
     private val serverUrl: String,
     private val cameraOnly: Boolean = false,
     private val onEvent: (String) -> Unit,
+    private val onWsState: (Boolean) -> Unit = {},
 ) {
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -57,6 +58,8 @@ class RvrRelay(
         disconnectSensors()
         webSocket?.close(1000, "relay stopped")
         webSocket = null
+        connected = false
+        onWsState(false)
     }
 
     private suspend fun connect() {
@@ -66,6 +69,7 @@ class RvrRelay(
         val wsListener = object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 connected = true
+                onWsState(true)
                 onEvent("WebSocket connected")
                 Log.i(TAG, "WebSocket connected")
                 scope.launch { startSensors() }
@@ -84,6 +88,7 @@ class RvrRelay(
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 connected = false
+                onWsState(false)
                 onEvent("WebSocket closed: $code $reason")
                 Log.i(TAG, "onClosed: $code $reason")
                 scheduleReconnect()
@@ -91,6 +96,7 @@ class RvrRelay(
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 connected = false
+                onWsState(false)
                 onEvent("WebSocket failure: ${t.message}")
                 Log.e(TAG, "onFailure: ${t.javaClass.simpleName}: ${t.message}", t)
                 scheduleReconnect()
