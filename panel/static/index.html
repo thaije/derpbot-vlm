@@ -791,7 +791,8 @@ function updateDecision(msg) {
     distStr,
   ].filter(Boolean).join(' &nbsp;');
   const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
-  const frameHtml = msg.frame ? `<div class="reason">frame: ${escapeHtml(msg.frame)}</div>` : '';
+  const frameSrc = msg.frame ? msg.frame.replace(/^\/tmp\/derpbot\/frames\//, '/frames/') : '';
+  const frameHtml = frameSrc ? `<img src="${escapeHtml(frameSrc)}" style="max-width:100%;border-radius:6px;margin-top:6px">` : '';
   addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : '') + frameHtml, meta);
 
   if (vis && msg.target_location) {

@@ -36,6 +36,7 @@ from websockets.protocol import State as WsState
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
+_FRAME_DIR = Path("/tmp/derpbot/frames")
 _FRAME_PREFIX = b"\x01"
 
 
@@ -122,6 +123,21 @@ class PanelProxy:
                         self.end_headers()
                         self.wfile.write(body)
                         return
+                # Serve saved VLM frames from /tmp/derpbot/frames/ (#debug)
+                if self.path.startswith("/frames/"):
+                    frame_name = self.path[len("/frames/"):]
+                    frame_path = _FRAME_DIR / frame_name
+                    if frame_path.is_file():
+                        body = frame_path.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "image/jpeg")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Cache-Control", "no-cache")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                    self.send_error(404)
+                    return
                 super().do_GET()
 
         server = HTTPServer((self.http_host, self.static_port), Handler)
