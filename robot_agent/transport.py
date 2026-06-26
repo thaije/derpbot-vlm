@@ -92,6 +92,12 @@ class RobotTransport(abc.ABC):
     @abc.abstractmethod
     async def halt(self) -> None: ...
 
+    async def wait_standstill(self, **kw) -> bool:
+        """Wait until the robot has stopped moving before capturing a frame.
+        Default: no-op (always ready). Backends with IMU data can override
+        to block until gyro settles, avoiding blurry VLM input."""
+        return True
+
     @abc.abstractmethod
     async def set_status(self, kind: str, **kw) -> None:
         """Backend-specific status output: ``torch`` (RVR), ``led`` /

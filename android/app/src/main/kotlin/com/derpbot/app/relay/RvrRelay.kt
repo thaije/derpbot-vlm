@@ -46,6 +46,10 @@ class RvrRelay(
     private var gyroscope: Sensor? = null
     private var sensorListener: SensorEventListener? = null
     private var lastImuSendMs: Long = 0
+    private val latestAccel = floatArrayOf(0f, 0f, 0f)
+    private val latestGyro = floatArrayOf(0f, 0f, 0f)
+    @Volatile private var accelFresh = false
+    @Volatile private var gyroFresh = false
 
     fun start() {
         if (running) return
@@ -211,7 +215,18 @@ class RvrRelay(
 
         sensorListener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
-                sendImu(event)
+                when (event.sensor.type) {
+                    Sensor.TYPE_ACCELEROMETER -> {
+                        System.arraycopy(event.values, 0, latestAccel, 0, 3)
+                        accelFresh = true
+                    }
+                    Sensor.TYPE_GYROSCOPE -> {
+                        System.arraycopy(event.values, 0, latestGyro, 0, 3)
+                        gyroFresh = true
+                    }
+                    else -> return
+                }
+                sendMergedImu()
             }
             override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
         }
@@ -220,30 +235,21 @@ class RvrRelay(
         gyroscope?.let { sensorManager?.registerListener(sensorListener, it, 20_000) }
     }
 
+    private fun sendMergedImu() {
+        val now = System.currentTimeMillis()
+        if (now - lastImuSendMs < 20) return  // cap at ~50 Hz
+        lastImuSendMs = now
+        val msg = ImuMessage(
+            floatArrayOf(latestAccel[0], latestAccel[1], latestAccel[2]),
+            floatArrayOf(latestGyro[0], latestGyro[1], latestGyro[2]),
+            now / 1000.0,
+        ).toJson()
+        webSocket?.send(msg)
+    }
+
     private fun disconnectSensors() {
         sensorListener?.let { sensorManager?.unregisterListener(it) }
         sensorListener = null
-    }
-
-    private fun sendImu(event: SensorEvent) {
-        val now = System.currentTimeMillis()
-        if (now - lastImuSendMs < 20) return // cap at ~50 Hz
-        lastImuSendMs = now
-
-        val values = event.values
-        val (accel, gyro) = when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> Pair(
-                floatArrayOf(values[0], values[1], values[2]),
-                floatArrayOf(0f, 0f, 0f),
-            )
-            Sensor.TYPE_GYROSCOPE -> Pair(
-                floatArrayOf(0f, 0f, 0f),
-                floatArrayOf(values[0], values[1], values[2]),
-            )
-            else -> return
-        }
-        val msg = ImuMessage(accel, gyro, now / 1000.0).toJson()
-        webSocket?.send(msg)
     }
 
     fun sendBleState(state: String) {

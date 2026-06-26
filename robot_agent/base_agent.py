@@ -209,6 +209,9 @@ class BaseRealAgent:
                 await asyncio.sleep(0.05)
                 continue
 
+            # Wait for the robot to stop moving before capturing (avoids
+            # blurry frames during/after turns — phone IMU gyro based).
+            await self.transport.wait_standstill()
             img = await self.transport.capture_frame()
             if img is None:
                 logger.warning("Frame capture failed; retrying")
@@ -404,6 +407,7 @@ class BaseRealAgent:
             logger.warning("VLM client not ready; cannot run manual query")
             return
 
+        await self.transport.wait_standstill()
         img = await self.transport.capture_frame()
         if img is None:
             logger.warning("Manual query: frame capture failed")

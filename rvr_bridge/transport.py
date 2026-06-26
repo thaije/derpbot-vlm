@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from typing import Optional
 
@@ -126,6 +127,37 @@ class RvrTransport(RobotTransport):
 
     async def capture_frame(self) -> Optional[Image.Image]:
         return await self.relay.capture_frame()
+
+    async def wait_standstill(
+        self,
+        *,
+        timeout_s: float = 3.0,
+        gyro_threshold: float = 0.15,
+        settle_s: float = 0.15,
+    ) -> bool:
+        """Wait until the robot's gyro indicates it has stopped moving.
+
+        Uses the phone IMU gyroscope (rad/s). Returns True if standstill
+        was detected within ``timeout_s``, False on timeout. ``settle_s``
+        is how long the gyro must stay below threshold before we consider
+        the robot truly stopped (avoids transient zeros mid-motion).
+        """
+        deadline = time.monotonic() + timeout_s
+        still_since: Optional[float] = None
+        while time.monotonic() < deadline:
+            imu = self.relay._latest_imu
+            if imu is not None:
+                gyro_mag = math.sqrt(sum(g * g for g in imu.gyro))
+                if gyro_mag < gyro_threshold:
+                    if still_since is None:
+                        still_since = time.monotonic()
+                    elif time.monotonic() - still_since >= settle_s:
+                        return True
+                else:
+                    still_since = None
+            await asyncio.sleep(0.03)
+        logger.warning("wait_standstill timed out (%.1fs)", timeout_s)
+        return False
 
     async def move_linear(self, distance_m: float, *, timeout_s: float) -> None:
         """Drive straight by ``distance_m`` (forward positive).  RVR uses
