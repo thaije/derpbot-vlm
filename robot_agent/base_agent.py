@@ -103,6 +103,11 @@ class BaseRealAgent:
         self._latest_frame: Optional[Image.Image] = None
         self._frame_seq: int = 0
 
+        # Recent decision history (for anti-loop awareness in the prompt).
+        # Capped — only the last N decisions are kept.
+        self._decision_history: list[dict] = []
+        self._decision_history_len: int = 8
+
         # Callbacks (set by DebugBus if --debug-bus is active; None otherwise).
         self.on_frame: Optional[Callable[[Image.Image], None]] = None
         self.on_decision: Optional[Callable[[dict], None]] = None
@@ -237,6 +242,16 @@ class BaseRealAgent:
                         decision.turn_angle_deg,
                         decision.drive_distance_m, decision.target_location,
                         frame_path, decision.reason[:80])
+
+            # Record in history for anti-loop awareness in future prompts.
+            self._decision_history.append({
+                "vis": decision.target_visible,
+                "turn": decision.turn_angle_deg,
+                "dist": decision.drive_distance_m,
+                "reason": decision.reason[:60],
+            })
+            if len(self._decision_history) > self._decision_history_len:
+                self._decision_history.pop(0)
 
             self._emit_decision(decision, latency_ms, frame_path)
 
@@ -490,8 +505,19 @@ class BaseRealAgent:
             "    target_visible=true and fill target_location.",
             "  - How much to turn (turn_angle_deg: -90/-60/-30/0/30/60/90, +=right) and how",
             "    far to drive (0.0-2.0 m). Use 0.0 m + a large turn when facing a wall.",
-            "Reply JSON only.",
         ]
+        # Include recent action history so the VLM can detect and break
+        # out of loops (e.g. turning left ↔ right in a dead end).
+        if self._decision_history:
+            lines.append("")
+            lines.append("Recent actions (oldest → newest):")
+            for d in self._decision_history:
+                vis = "saw target" if d["vis"] else "no target"
+                lines.append(
+                    f"  turn={d['turn']:+d}° drive={d['dist']:.1f}m ({vis}) — {d['reason']}")
+            lines.append("AVOID repeating the same turn pattern — you may be stuck in a")
+            lines.append("dead end. Try a DIFFERENT direction or drive distance to escape.")
+        lines.append("Reply JSON only.")
         return "\n".join(lines)
 
     # ── Panel event emitters ─────────────────────────────────────────────

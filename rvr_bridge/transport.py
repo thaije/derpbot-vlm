@@ -172,7 +172,7 @@ class RvrTransport(RobotTransport):
         )
         await self.relay.send(DriveMessage(
             speed=self.drive_speed_byte,
-            heading=0,  # heading is managed by the agent's counter
+            heading=self._agent_heading(),
             flags=DRIVE_FLAGS_FORWARD if distance_m > 0 else DRIVE_FLAGS_REVERSE,
         ))
 
@@ -186,26 +186,27 @@ class RvrTransport(RobotTransport):
         await self.relay.send(StopMessage(heading=0))
 
     async def rotate(self, angle_deg: float, *, timeout_s: float) -> None:
-        """In-place pivot via raw_motors with opposite wheel directions.
-        ``angle_deg`` positive = left/CCW.  Timed (no real odometry)."""
+        """In-place turn via driveWithHeading (closed-loop).
+
+        Uses the agent's dead-reckoned heading counter, already updated by
+        ``_apply_heading_delta`` before this is called.  Sends speed=0 with
+        the new heading target so the RVR's firmware controller rotates to
+        it, then waits for the gyro to settle.
+
+        ``angle_deg`` positive = left/CCW.  The actual heading target is
+        read from the agent's counter — this method just drives to it.
+        """
         if abs(angle_deg) < 1.0:
             await self.halt()
             return
 
-        # Rough timing: TURN_SPEED at ~100°/s for pivot
-        duration_s = min(abs(angle_deg) / 100.0, timeout_s)
-        turn_speed = TURN_SPEED
-        if angle_deg > 0:
-            # Turn left: left reverse, right forward
-            await self.relay.send(RawMotorsMessage(
-                l_mode=2, l_speed=turn_speed, r_mode=1, r_speed=turn_speed))
-        else:
-            # Turn right: left forward, right reverse
-            await self.relay.send(RawMotorsMessage(
-                l_mode=1, l_speed=turn_speed, r_mode=2, r_speed=turn_speed))
+        heading = self._agent_heading()
+        await self.relay.send(DriveMessage(
+            speed=0, heading=heading, flags=DRIVE_FLAGS_FORWARD))
 
-        await asyncio.sleep(duration_s)
-        await self.relay.send(StopMessage(heading=0))
+        # Wait for the RVR to complete the turn (gyro settles).
+        await self.wait_standstill(timeout_s=timeout_s, settle_s=0.2)
+        await self.relay.send(StopMessage(heading=heading))
 
     async def teleop_step(self, lin: float, turn: float) -> None:
         """One tick of teleop drive (~20 Hz).  Both zero → halt.
@@ -241,7 +242,7 @@ class RvrTransport(RobotTransport):
         await self.relay.send(StopMessage(heading=heading))
 
     async def halt(self) -> None:
-        await self.relay.send(StopMessage(heading=0))
+        await self.relay.send(StopMessage(heading=self._agent_heading()))
 
     async def set_status(self, kind: str, **kw) -> None:
         if kind == "torch":
