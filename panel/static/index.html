@@ -791,7 +791,8 @@ function updateDecision(msg) {
     distStr,
   ].filter(Boolean).join(' &nbsp;');
   const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
-  addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : ''), meta);
+  const frameHtml = msg.frame ? `<div class="reason">frame: ${escapeHtml(msg.frame)}</div>` : '';
+  addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : '') + frameHtml, meta);
 
   if (vis && msg.target_location) {
     flashOverlay(`📍 ${msg.target_location}`, '');

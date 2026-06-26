@@ -30,6 +30,7 @@ from .transport import BatteryState, HazardEvent, RobotTransport
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_FRAME_DIR = Path("/tmp/derpbot/frames")
 
 # Defaults — backends may override via their config dataclass.
 ARRIVE_DIST_M = 0.4
@@ -100,6 +101,7 @@ class BaseRealAgent:
         self._auto_mode: bool = False
         self._bump_enabled: bool = True
         self._latest_frame: Optional[Image.Image] = None
+        self._frame_seq: int = 0
 
         # Callbacks (set by DebugBus if --debug-bus is active; None otherwise).
         self.on_frame: Optional[Callable[[Image.Image], None]] = None
@@ -215,6 +217,7 @@ class BaseRealAgent:
 
             self._latest_frame = img
             self._emit_frame(img)
+            frame_path = self._save_frame(img)
 
             loop = asyncio.get_event_loop()
             prompt = self._build_prompt()
@@ -226,13 +229,13 @@ class BaseRealAgent:
                 await asyncio.sleep(self.config.vlm_interval_s)
                 continue
 
-            logger.info("VLM: vis=%s hdg=%s turn=%+d° dist=%.2f loc=%s | %s",
+            logger.info("VLM: vis=%s hdg=%s turn=%+d° dist=%.2f loc=%s frame=%s | %s",
                         decision.target_visible, decision.heading,
                         decision.turn_angle_deg,
                         decision.drive_distance_m, decision.target_location,
-                        decision.reason[:80])
+                        frame_path, decision.reason[:80])
 
-            self._emit_decision(decision, latency_ms)
+            self._emit_decision(decision, latency_ms, frame_path)
 
             confirmed = False
             if decision.target_visible and decision.target_location:
@@ -264,6 +267,7 @@ class BaseRealAgent:
                 "loc": decision.target_location,
                 "confirmed": confirmed,
                 "reason": decision.reason[:120],
+                "frame": frame_path,
             })
 
             self._apply_heading_delta(decision.turn_angle_deg)
@@ -406,6 +410,7 @@ class BaseRealAgent:
             return
         self._latest_frame = img
         self._emit_frame(img)
+        frame_path = self._save_frame(img, tag="manual")
 
         loop = asyncio.get_event_loop()
         prompt = self._build_prompt()
@@ -491,7 +496,24 @@ class BaseRealAgent:
         if self.on_frame:
             self.on_frame(img)
 
-    def _emit_decision(self, decision, latency_ms: float) -> None:
+    def _save_frame(self, img: Image.Image, tag: str = "") -> str:
+        """Save a frame to /tmp/derpbot/frames/ for debugging.
+
+        Returns the path so it can be logged alongside the VLM decision.
+        """
+        self._frame_seq += 1
+        _FRAME_DIR.mkdir(parents=True, exist_ok=True)
+        suffix = f"_{tag}" if tag else ""
+        path = _FRAME_DIR / f"frame_{self._frame_seq:05d}{suffix}.jpg"
+        try:
+            img.save(str(path), format="JPEG", quality=90)
+        except Exception as e:
+            logger.warning("Failed to save frame: %s", e)
+            return ""
+        logger.info("Frame saved: %s (%dx%d)", path, img.size[0], img.size[1])
+        return str(path)
+
+    def _emit_decision(self, decision, latency_ms: float, frame_path: str = "") -> None:
         if self.on_decision:
             self.on_decision({
                 "target_visible": decision.target_visible,
@@ -501,6 +523,7 @@ class BaseRealAgent:
                 "target_location": decision.target_location,
                 "reason": decision.reason,
                 "latency_ms": latency_ms,
+                "frame": frame_path,
             })
 
     def _emit_verifier(self, verify, latency_ms: float) -> None:
