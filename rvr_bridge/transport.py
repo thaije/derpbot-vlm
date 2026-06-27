@@ -8,10 +8,10 @@ RVR-specific drive mechanics:
 - **Linear drive**: ``DriveMessage(speed_byte, heading, flags)`` at a fixed
   speed byte; distance is timed from ``speed_mps``.  The RVR's firmware
   handles closed-loop heading hold.
-- **Rotate**: ``RawMotorsMessage`` with opposite wheel directions for true
-  in-place pivot.  ``driveWithHeading`` drives one track forward while the
-  other drags — not a pivot.  Speed must be high enough to overcome
-  wheel-scrub friction (64 stalls, 100+ works).
+- **Rotate**: ``driveWithHeading(speed=0)`` by default (firmware yaw
+  controller, gentle).  Optional ``raw_motors`` pivot mode for faster
+  turns when ``rotate_speed > 0`` — speed must be ≥100 to overcome
+  wheel-scrub friction.
 - **Heading**: dead-reckoned byte counter (``_desired_heading``), incremented
   by the agent.  No real odometry — ``has_real_heading = False``.
 - **Bump**: IMU spike detector (``BumpDetector``) over the phone's
@@ -48,6 +48,7 @@ MAX_DRIVE_MS = 4000
 BUMP_REVERSE_MS = 1500
 BUMP_TURN_DEG = 90
 TELEOP_TURN_DEG_PER_TICK = 5  # ≈100°/s at 20 Hz tick rate
+ROTATE_SPEED = 0            # 0 = driveWithHeading (firmware yaw), >0 = raw_motors pivot speed
 
 
 class RvrTransport(RobotTransport):
@@ -64,11 +65,15 @@ class RvrTransport(RobotTransport):
         speed_mps: float = SPEED_MPS,
         max_drive_ms: int = MAX_DRIVE_MS,
         bump_threshold_factor: float = 2.5,
+        teleop_turn_deg_per_tick: int = TELEOP_TURN_DEG_PER_TICK,
+        rotate_speed: int = ROTATE_SPEED,
     ):
         self.relay = relay
         self.drive_speed_byte = drive_speed_byte
         self.speed_mps = speed_mps
         self.max_drive_ms = max_drive_ms
+        self.teleop_turn_deg_per_tick = teleop_turn_deg_per_tick
+        self.rotate_speed = rotate_speed
         self.bump_detector = BumpDetector(threshold_factor=bump_threshold_factor)
         self._bump_enabled = True
 
@@ -186,27 +191,52 @@ class RvrTransport(RobotTransport):
         await self.relay.send(StopMessage(heading=0))
 
     async def rotate(self, angle_deg: float, *, timeout_s: float) -> None:
-        """In-place turn via driveWithHeading (closed-loop).
+        """In-place turn.
 
-        Uses the agent's dead-reckoned heading counter, already updated by
-        ``_apply_heading_delta`` before this is called.  Sends speed=0 with
-        the new heading target so the RVR's firmware controller rotates to
-        it, then waits for the gyro to settle.
+        Two modes (``rotate_speed`` constructor arg):
+        - ``0`` (default): ``driveWithHeading(speed=0)`` — RVR firmware
+          closed-loop yaw controller.  Gentle, no snap-back, but rotation
+          speed is not directly controllable.
+        - ``>0``: ``raw_motors`` pivot at the given speed byte.  Direct
+          wheel control — faster, more aggressive turns.  May snap back
+          slightly on stop if the yaw-hold re-asserts.
 
-        ``angle_deg`` positive = left/CCW.  The actual heading target is
-        read from the agent's counter — this method just drives to it.
+        ``angle_deg`` positive = left/CCW.  The heading counter is already
+        updated by ``_apply_heading_delta`` before this is called.
         """
         if abs(angle_deg) < 1.0:
             await self.halt()
             return
 
+        if self.rotate_speed > 0:
+            await self._rotate_raw(angle_deg, timeout_s)
+        else:
+            await self._rotate_heading(timeout_s)
+
+    async def _rotate_heading(self, timeout_s: float) -> None:
+        """Closed-loop rotate via firmware yaw controller."""
         heading = self._agent_heading()
         await self.relay.send(DriveMessage(
             speed=0, heading=heading, flags=DRIVE_FLAGS_FORWARD))
-
-        # Wait for the RVR to complete the turn (gyro settles).
         await self.wait_standstill(timeout_s=timeout_s, settle_s=0.2)
         await self.relay.send(StopMessage(heading=heading))
+
+    async def _rotate_raw(self, angle_deg: float, timeout_s: float) -> None:
+        """Raw-motors pivot at ``rotate_speed``.  Timed turn — duration
+        scales with angle magnitude and inversely with speed."""
+        speed = self.rotate_speed
+        # Empirical: ~700 ms per 90° at speed 100 → 7.8 ms/°
+        duration_ms = max(int(abs(angle_deg) * 7800 / speed), 300)
+        # positive = left/CCW: left wheels reverse, right wheels forward
+        if angle_deg > 0:
+            l_mode, r_mode = 2, 1   # reverse, forward
+        else:
+            l_mode, r_mode = 1, 2   # forward, reverse
+        await self.relay.send(RawMotorsMessage(
+            l_mode=l_mode, l_speed=speed,
+            r_mode=r_mode, r_speed=speed))
+        await asyncio.sleep(duration_ms / 1000.0)
+        await self.relay.send(StopMessage(heading=self._agent_heading()))
 
     async def teleop_step(self, lin: float, turn: float) -> None:
         """One tick of teleop drive (~20 Hz).  Both zero → halt.
@@ -221,8 +251,8 @@ class RvrTransport(RobotTransport):
 
         if abs(turn) > 0.05:
             # Increment the heading target so the RVR's closed-loop controller
-            # rotates to it.  5°/tick at 20 Hz ≈ 100°/s, scaled by turn magnitude.
-            delta = int(TELEOP_TURN_DEG_PER_TICK * turn)
+            # rotates to it.  teleop_turn_deg_per_tick at 20 Hz, scaled by turn.
+            delta = int(self.teleop_turn_deg_per_tick * turn)
             heading = self._agent_set_heading(
                 self._norm_heading(heading + delta))
 

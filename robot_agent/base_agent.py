@@ -303,10 +303,14 @@ class BaseRealAgent:
         self._log_entry({"event": "arrived", "target": self.config.target})
 
     async def _execute_drive(self, distance_m: float, turn_angle_deg: int = 0) -> None:
-        """Execute a drive commitment via the transport.  Default impl:
-        rotate first (if turn), then drive linear (if distance).  Subclasses
-        can override for backend-specific sequencing."""
-        if turn_angle_deg != 0 and distance_m <= 0.0:
+        """Execute a drive commitment via the transport.
+
+        Mutually exclusive: turn OR drive, never both in one step.  The VLM
+        cannot reason about combined arc motions effectively, so we force
+        it to pick one: if turn ≠ 0, rotate in place and discard distance;
+        if turn == 0 and distance > 0, drive straight.
+        """
+        if turn_angle_deg != 0:
             await self.transport.rotate(turn_angle_deg, timeout_s=10.0)
             return
 
@@ -503,8 +507,12 @@ class BaseRealAgent:
             "  - Is the target visible? Scan floor, corners, walls, edges. The target may be",
             "    small or low-contrast. If you see ANY object that plausibly matches, set",
             "    target_visible=true and fill target_location.",
-            "  - How much to turn (turn_angle_deg: -90/-60/-30/0/30/60/90, +=right) and how",
-            "    far to drive (0.0-2.0 m). Use 0.0 m + a large turn when facing a wall.",
+            "  - Pick ONE action: turn in place OR drive straight — never both.",
+            "    turn_angle_deg: -90/-60/-30/0/30/60/90 (+=right). drive_distance_m: 0.0-2.0 m.",
+            "    To turn: set turn_angle_deg ≠ 0, drive_distance_m = 0.0.",
+            "    To drive: set turn_angle_deg = 0, drive_distance_m > 0.0.",
+            "    Use a turn when facing a wall or needing to search a new area.",
+            "    Use drive when the target is visible and ahead, or to explore forward.",
         ]
         # Include recent action history so the VLM can detect and break
         # out of loops (e.g. turning left ↔ right in a dead end).

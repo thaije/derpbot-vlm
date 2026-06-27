@@ -42,6 +42,10 @@ def main() -> None:
     parser.add_argument("--ws-port", type=int, default=8765, help="WebSocket listen port")
     parser.add_argument("--drive-speed", type=int, default=64, help="RVR drive speed byte (0-255)")
     parser.add_argument("--speed-mps", type=float, default=0.35, help="Speed in m/s for distance→duration")
+    parser.add_argument("--teleop-turn-rate", type=int, default=5,
+                        help="Teleop turn rate in deg/tick at 20 Hz (default 5 ≈ 100°/s)")
+    parser.add_argument("--rotate-speed", type=int, default=0,
+                        help="Autonomous rotate speed byte (0=firmware yaw-hold, >0=raw_motors pivot; default 0)")
     parser.add_argument("--bump-threshold", type=float, default=2.5, help="IMU bump detection threshold factor")
     parser.add_argument("--log-file", default=None, help="JSONL log file path")
     parser.add_argument("--debug-bus", type=int, default=None, metavar="PORT",
@@ -90,6 +94,8 @@ def main() -> None:
         speed_mps=config.speed_mps,
         max_drive_ms=config.max_drive_ms,
         bump_threshold_factor=config.bump_threshold_factor,
+        teleop_turn_deg_per_tick=args.teleop_turn_rate,
+        rotate_speed=args.rotate_speed,
     )
     agent = RvrAgent(config, transport)
 
