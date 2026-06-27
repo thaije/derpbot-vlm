@@ -277,14 +277,15 @@ class BaseRealAgent:
 
     # ── Scan sweep ───────────────────────────────────────────────────────
 
-    async def _scan_sweep(self, reason: str = "loop") -> Optional[dict]:
+    async def _scan_sweep(self, reason: str = "loop") -> None:
         """360° step-stop-shoot scan: rotate SCAN_STEP_DEG, settle, capture,
         VLM query at each of SCAN_STEPS positions.  Breaks early if the
         target is spotted and confirmed.
 
-        Returns the VLM decision with the largest drive_distance_m across
-        all scan steps (so the caller can force a drive into open space),
-        or None if the scan was interrupted / target found.
+        Completes the full sweep (never breaks early for open paths — might
+        miss the target). After the scan, if a step found an open path
+        (turn == 0, dist > 0), rotates back to that step's heading and
+        drives forward.
         """
         self._scanning = True
         self._scan_step = 0
@@ -368,34 +369,20 @@ class BaseRealAgent:
                         self._scanning = False
                         return None  # caller proceeds with the decision
 
-            # If this step sees an open path (dist > 0, turn == 0), drive
-            # immediately and end the scan — the robot found an open direction.
-            # Continuing the scan would rotate away from it, and a post-scan
-            # forced drive would go in the wrong direction.
-            if (decision.drive_distance_m > 0
-                    and decision.turn_angle_deg == 0
-                    and not decision.target_visible):
-                logger.info("SCAN: open path at step %d — driving %.1fm",
-                            step + 1, decision.drive_distance_m)
-                self._log_entry({"event": "scan_end",
-                                 "reason": "open_path", "step": step})
-                self._consecutive_turns = 0
-                self._scanning = False
-                self._scan_step = 0
-                await self._execute_drive(decision.drive_distance_m, 0)
-                return None  # no forced drive needed — already drove
-
-            # Track the decision with the largest drive distance for a
-            # post-scan forced drive (fallback if no open path found).
-            if decision.drive_distance_m > 0 and (
-                best_drive is None
-                or decision.drive_distance_m > best_drive["decision"].drive_distance_m
-            ):
-                best_drive = {
-                    "decision": decision,
-                    "frame_path": frame_path,
-                    "prompt": prompt,
-                }
+            # Track the step with the largest straight drive (turn == 0,
+            # dist > 0) for a post-scan forced drive. We complete the full
+            # 360° sweep first — never break early, or we might miss the
+            # target. After the scan, we rotate back to this step's heading
+            # and drive forward.
+            if decision.drive_distance_m > 0 and decision.turn_angle_deg == 0:
+                if (best_drive is None
+                        or decision.drive_distance_m > best_drive["decision"].drive_distance_m):
+                    best_drive = {
+                        "decision": decision,
+                        "frame_path": frame_path,
+                        "prompt": prompt,
+                        "step": step,
+                    }
 
             # Rotate to next position (skip after last step)
             if step < SCAN_STEPS - 1:
@@ -408,7 +395,31 @@ class BaseRealAgent:
         self._scan_step = 0
         self._log_entry({"event": "scan_end", "reason": "complete"})
         logger.info("SCAN: complete (no target found)")
-        return best_drive
+
+        # If a scan step found an open path, rotate back to that step's
+        # heading and drive forward.  The scan rotated SCAN_STEP_DEG per
+        # step in one direction, so the best step is (total - 1 - best_step)
+        # steps away from the current heading — rotate that many steps back.
+        if best_drive is not None:
+            best_step = best_drive["step"]
+            dist = best_drive["decision"].drive_distance_m
+            # Steps remaining after the best step = (SCAN_STEPS - 1 - best_step).
+            # Each step rotated SCAN_STEP_DEG. Rotate the same amount back.
+            steps_to_undo = SCAN_STEPS - 1 - best_step
+            if steps_to_undo > 0:
+                back_deg = steps_to_undo * SCAN_STEP_DEG
+                logger.info("SCAN: rotating back %d steps (%+d°) to step %d heading",
+                            steps_to_undo, -back_deg, best_step + 1)
+                self._apply_heading_delta(-back_deg)
+                await self.transport.rotate(-back_deg,
+                                            timeout_s=SCAN_ROTATE_TIMEOUT_S)
+            logger.info("SCAN: forced drive %.1fm toward step %d's open path",
+                        dist, best_step + 1)
+            self._log_entry({"event": "forced_drive", "dist": dist,
+                             "reason": "post_scan", "scan_step": best_step})
+            await self._execute_drive(dist, 0)
+
+        return None  # caller continues normal loop after forced drive
 
     # ── Autonomous loop ──────────────────────────────────────────────────
 
@@ -425,15 +436,7 @@ class BaseRealAgent:
             # VLM full environmental context before committing to a direction.
             if not self._initial_scan_done:
                 self._initial_scan_done = True
-                result = await self._scan_sweep(reason="initial")
-                if result is not None:
-                    # No target found during scan — force a forward drive
-                    # using the last scan frame's decision.
-                    d = result["decision"]
-                    if d.drive_distance_m > 0:
-                        logger.info("SCAN: forcing drive %.1fm after scan",
-                                    d.drive_distance_m)
-                        await self._execute_drive(d.drive_distance_m, 0)
+                await self._scan_sweep(reason="initial")
                 continue
 
             # Wait for the robot to stop moving before capturing (avoids
@@ -551,16 +554,7 @@ class BaseRealAgent:
             if self._consecutive_turns >= LOOP_TURNS_TRIGGER:
                 logger.info("Loop detected: %d consecutive turns — triggering scan",
                             self._consecutive_turns)
-                result = await self._scan_sweep(reason="loop")
-                if result is not None:
-                    d = result["decision"]
-                    if d.drive_distance_m > 0:
-                        logger.info("SCAN: forcing drive %.1fm after loop-break scan",
-                                    d.drive_distance_m)
-                        self._log_entry({"event": "forced_drive",
-                                         "dist": d.drive_distance_m,
-                                         "reason": "post_scan"})
-                        await self._execute_drive(d.drive_distance_m, 0)
+                await self._scan_sweep(reason="loop")
                 await asyncio.sleep(self.config.vlm_interval_s)
                 continue
 
