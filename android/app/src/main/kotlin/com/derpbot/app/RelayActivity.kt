@@ -56,6 +56,16 @@ class RelayActivity : AppCompatActivity() {
         override fun onUiUpdate() {
             val s = service ?: return
             status.text = s.statusText
+            // Tint the status line red while Bluetooth is unavailable/enabling so
+            // the warning is obvious on the dim logo screen (#28).
+            val ble = s.bleState
+            val warn = ble == "unavailable" || ble == "enabling"
+            status.setTextColor(
+                if (ble == "unavailable") Color.parseColor("#e05a4a")
+                else if (ble == "enabling") Color.parseColor("#d9a13a")
+                else Color.parseColor("#cfc8b8")
+            )
+            status.textSize = if (warn) 18f else 16f
             log.text = s.logLines.joinToString("\n")
         }
     }

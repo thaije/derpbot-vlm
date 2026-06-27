@@ -169,6 +169,7 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **`:rvr` module unchanged**: clean-room Kotlin port of Sphero v2 BLE protocol, verified vs `spherov2.py`.
 - **v2 wire protocol**: SOP `0x8D`/EOP `0xD8`/escape `0xAB`; checksum `0xFF-(sum&0xFF)`; target byte `(1<<4)|proc` (PRIMARY=`0x11`, SECONDARY=`0x12`). Power DID=19, Drive DID=22. No anti-DoS handshake.
 - **BLE GATT**: Sphero v2 API service `00010001-574f-...`, single write+notify char `00010002-574f-...`.
+- **Bluetooth auto-enable at launch (#28)**: `RvrBleConnection` turns Bluetooth on automatically (up to 3 retries of `BluetoothAdapter.enable()`). New BLE states surface this: `enabling` (turning BT on), `unavailable` (BT off + auto-enable failed — user must enable manually). Both produce a warning: the app-screen status line turns red/amber and the panel logs a `msg-warn` with instructions.
 - **IMU bump detect**: `BumpDetector` (accelerometer RMS spike over baseline) replaces sim bumper topic for real-robot safety. Threshold configurable (`--bump-threshold`).
 - **WiFi deploy** (no USB cable needed after initial setup):
   1. First time over USB: `adb tcpip 5555` then `adb connect <phone-ip>:5555`. After that WiFi ADB persists across reboots.

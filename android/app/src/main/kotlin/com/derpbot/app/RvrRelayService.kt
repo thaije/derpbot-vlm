@@ -156,6 +156,21 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         bleState = state.name.lowercase()
         relay?.sendBleState(state.name.lowercase())
         if (state == RvrBleConnection.State.READY) connection.send(commands.wake())
+        if (state == RvrBleConnection.State.UNAVAILABLE || state == RvrBleConnection.State.ENABLING) {
+            // Surface a clear warning on the app screen + panel.
+            val msg = when (state) {
+                RvrBleConnection.State.ENABLING ->
+                    "Turning Bluetooth on… enable in Settings if this fails"
+                RvrBleConnection.State.UNAVAILABLE ->
+                    "⚠ Bluetooth unavailable — enable it manually to connect to the robot"
+                else -> ""
+            }
+            if (msg.isNotEmpty()) {
+                appendLog(msg)
+                // Panel-level warning (separate from ble_state line).
+                relay?.sendBleState(state.name.lowercase())
+            }
+        }
         runOnUiThread { refreshStatus() }
     }
 
@@ -222,12 +237,18 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
     /**
      * Build a single status line showing both link states, e.g.:
      *   "BLE: ready  ·  WS: connected"
-     * Camera-only mode reports BLE as "disabled".
+     * Camera-only mode reports BLE as "disabled". A warning suffix is appended
+     * when Bluetooth is off and could not be enabled.
      */
     private fun refreshStatus() {
         val bleLabel = if (cameraOnly) "disabled" else bleState
         val wsLabel = if (wsConnected) "connected" else "disconnected"
-        statusText = "BLE: $bleLabel  ·  WS: $wsLabel"
+        statusText = buildString {
+            append("BLE: $bleLabel  ·  WS: $wsLabel")
+            if (!cameraOnly && (bleState == "unavailable" || bleState == "enabling")) {
+                append("  ·  ⚠ enable Bluetooth on the phone")
+            }
+        }
         notifyUi()
     }
 

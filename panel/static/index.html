@@ -626,6 +626,7 @@ let busConnected = false;
 let phoneConnected = false;
 let currentBackend = '?';
 let currentCapabilities = new Set();
+let lastBleWarned = null;
 
 function connectWS() {
   ws = new WebSocket(wsUrl);
@@ -764,10 +765,20 @@ function updateBLE(state) {
   icon.classList.remove('ok', 'warn', 'err');
   let cls = 'err';
   if (state === 'ready') cls = 'ok';
-  else if (state && state !== 'disconnected') cls = 'warn';
+  else if (state && state !== 'disconnected' && state !== 'unavailable') cls = 'warn';
   icon.classList.add(cls);
   const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : 'Unknown';
   icon.setAttribute('data-tooltip', `Robot: ${label}`);
+  // Explicit on-screen warning when Bluetooth can't be enabled on the phone (#28).
+  // Guarded so it only fires on a transition, not on every state refresh.
+  if (state !== lastBleWarned) {
+    if (state === 'unavailable') {
+      addMessage('msg-warn', 'BLE', '⚠ Bluetooth unavailable on phone — enable it manually to connect to the robot');
+    } else if (state === 'enabling') {
+      addMessage('msg-system', 'BLE', 'Turning Bluetooth on…');
+    }
+    lastBleWarned = state;
+  }
 }
 
 function applyCapabilities() {
