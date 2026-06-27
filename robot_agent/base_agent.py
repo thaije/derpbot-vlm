@@ -253,7 +253,7 @@ class BaseRealAgent:
             if len(self._decision_history) > self._decision_history_len:
                 self._decision_history.pop(0)
 
-            self._emit_decision(decision, latency_ms, frame_path)
+            self._emit_decision(decision, latency_ms, frame_path, prompt)
 
             confirmed = False
             if decision.target_visible and decision.target_location:
@@ -445,7 +445,7 @@ class BaseRealAgent:
                     decision.turn_angle_deg,
                     decision.drive_distance_m, decision.target_location,
                     decision.reason[:80])
-        self._emit_decision(decision, latency_ms)
+        self._emit_decision(decision, latency_ms, "", prompt)
 
         if decision.target_visible and decision.target_location:
             t0 = time.time()
@@ -543,7 +543,8 @@ class BaseRealAgent:
         logger.info("Frame saved: %s (%dx%d)", path, img.size[0], img.size[1])
         return str(path)
 
-    def _emit_decision(self, decision, latency_ms: float, frame_path: str = "") -> None:
+    def _emit_decision(self, decision, latency_ms: float, frame_path: str = "",
+                       prompt: str = "") -> None:
         if self.on_decision:
             self.on_decision({
                 "target_visible": decision.target_visible,
@@ -554,6 +555,7 @@ class BaseRealAgent:
                 "reason": decision.reason,
                 "latency_ms": latency_ms,
                 "frame": frame_path,
+                "prompt": prompt,
             })
 
     def _emit_verifier(self, verify, latency_ms: float) -> None:

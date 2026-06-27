@@ -213,6 +213,7 @@ body {
 }
 
 /* ── Conversation ── */
+.side-pane { position: relative; }
 #conversation {
   flex: 1;
   overflow-y: auto;
@@ -221,6 +222,28 @@ body {
   font-size: 12px;
   line-height: 1.5;
   scroll-behavior: smooth;
+}
+.jump-latest {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11px;
+  font-family: var(--mono);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+  z-index: 10;
+}
+.jump-latest.visible {
+  opacity: 0.9;
+  pointer-events: auto;
 }
 .msg {
   margin-bottom: 8px;
@@ -512,6 +535,7 @@ kbd {
 
   <div class="side-pane">
     <div id="conversation"></div>
+    <button id="jump-latest" class="jump-latest" onclick="scrollToLatest()">↓ Latest</button>
   </div>
 </div>
 
@@ -744,6 +768,28 @@ function updatePhoneBattery(pct) {
 const MAX_MSGS = 200;
 let currentTarget = null;
 let currentTargetDesc = null;
+let scrollLocked = true;  // true = auto-scroll to bottom on new messages
+
+function initScrollLock() {
+  const conv = document.getElementById('conversation');
+  conv.addEventListener('scroll', () => {
+    const atBottom = conv.scrollHeight - conv.scrollTop - conv.clientHeight < 40;
+    if (atBottom) {
+      scrollLocked = true;
+      document.getElementById('jump-latest').classList.remove('visible');
+    } else {
+      scrollLocked = false;
+      document.getElementById('jump-latest').classList.add('visible');
+    }
+  });
+}
+
+function scrollToLatest() {
+  const conv = document.getElementById('conversation');
+  conv.scrollTop = conv.scrollHeight;
+  scrollLocked = true;
+  document.getElementById('jump-latest').classList.remove('visible');
+}
 
 function updateStatusLabel() {
   const el = document.getElementById('status-label');
@@ -771,7 +817,7 @@ function addMessage(cls, tag, bodyHtml, metaText) {
   `;
   conv.appendChild(el);
   while (conv.children.length > MAX_MSGS) conv.removeChild(conv.firstChild);
-  conv.scrollTop = conv.scrollHeight;
+  if (scrollLocked) conv.scrollTop = conv.scrollHeight;
 }
 
 function updateDecision(msg) {
@@ -793,7 +839,10 @@ function updateDecision(msg) {
   const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
   const frameSrc = msg.frame ? msg.frame.replace(/^\/tmp\/derpbot\/frames\//, '/frames/') : '';
   const frameHtml = frameSrc ? `<img src="${escapeHtml(frameSrc)}" style="max-width:100%;border-radius:6px;margin-top:6px">` : '';
-  addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : '') + frameHtml, meta);
+  const promptHtml = msg.prompt
+    ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--text-dim);font-size:11px;opacity:0.7">prompt</summary><pre style="white-space:pre-wrap;color:var(--text-dim);font-size:10px;margin-top:4px;padding:6px;border-radius:4px;background:rgba(0,0,0,0.2)">${escapeHtml(msg.prompt)}</pre></details>`
+    : '';
+  addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : '') + frameHtml + promptHtml, meta);
 
   if (vis && msg.target_location) {
     flashOverlay(`📍 ${msg.target_location}`, '');
@@ -1023,6 +1072,7 @@ function escapeHtml(s) {
 }
 
 // ── Init ──────────────────────────────────────────────────────────
+initScrollLock();
 connectWS();
 addMessage('msg-system', 'PANEL', 'DerpBot panel initialised — waiting for agent...');
 </script>
