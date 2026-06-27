@@ -126,6 +126,8 @@ class PanelProxy:
                 # Serve saved VLM frames from runs/_current/frames/
                 if self.path.startswith("/frames/"):
                     frame_name = self.path[len("/frames/"):]
+                    # Strip cache-busting query param (?t=...)
+                    frame_name = frame_name.split("?")[0]
                     frame_path = _FRAME_DIR / frame_name
                     if frame_path.is_file():
                         body = frame_path.read_bytes()

@@ -155,6 +155,11 @@ class BaseRealAgent:
         # acknowledge via the panel before declaring arrival.
         self._confirm_future: Optional[asyncio.Future] = None
 
+        # Rejected detections: list of dicts with the target name + optional
+        # user feedback (e.g. "that's the wrong red thing, the bag is in the
+        # kitchen"). Fed back into the VLM prompt and verifier.
+        self._rejected_detections: list[dict] = []
+
         # Callbacks (set by DebugBus if --debug-bus is active; None otherwise).
         self.on_frame: Optional[Callable[[Image.Image], None]] = None
         self.on_decision: Optional[Callable[[dict], None]] = None
@@ -323,7 +328,8 @@ class BaseRealAgent:
             if decision.target_visible and decision.target_location:
                 verify = await loop.run_in_executor(
                     None, self._vlm_client.verify_candidate,
-                    img, self.config.target, decision.target_location)
+                    img, self.config.target, decision.target_location,
+                    self._rejected_detections)
                 if verify:
                     v_latency_ms = 0  # approx
                     self._emit_verifier(verify, v_latency_ms)
@@ -435,7 +441,8 @@ class BaseRealAgent:
                 t0 = time.time()
                 verify = await loop.run_in_executor(
                     None, self._vlm_client.verify_candidate,
-                    img, self.config.target, decision.target_location
+                    img, self.config.target, decision.target_location,
+                    self._rejected_detections
                 )
                 v_latency_ms = (time.time() - t0) * 1000
                 if verify:
@@ -695,7 +702,8 @@ class BaseRealAgent:
             t0 = time.time()
             verify = await loop.run_in_executor(
                 None, self._vlm_client.verify_candidate,
-                img, self.config.target, decision.target_location
+                img, self.config.target, decision.target_location,
+                self._rejected_detections
             )
             v_latency_ms = (time.time() - t0) * 1000
             if verify:
@@ -784,6 +792,15 @@ class BaseRealAgent:
                 lines.append(f"  {action} ({vis}) — {first_sentence}")
             lines.append("AVOID back and forth turn patterns — you may be stuck in a")
             lines.append("dead end. Stick to turning in one direction when stuck, or try a different drive distance to escape.")
+        # Rejected detections (user said "no, that's not it")
+        if self._rejected_detections:
+            lines.append("")
+            lines.append("Previously rejected by the user (do NOT flag these as the target again):")
+            for r in self._rejected_detections:
+                desc = r["target"]
+                if r["feedback"]:
+                    desc += f" — {r['feedback']}"
+                lines.append(f"  ✗ {desc}")
         lines.append("Reply JSON only.")
         return "\n".join(lines)
 
@@ -892,17 +909,25 @@ class BaseRealAgent:
 
         try:
             result = await asyncio.wait_for(self._confirm_future, timeout=120.0)
-            self._log_entry({"event": "confirm_result", "confirmed": result})
-            return result
+            confirmed, feedback = result
+            self._log_entry({"event": "confirm_result", "confirmed": confirmed,
+                             "feedback": feedback})
+            if not confirmed:
+                self._rejected_detections.append({
+                    "target": target,
+                    "feedback": feedback,
+                })
+            return confirmed
         except asyncio.TimeoutError:
             logger.warning("User confirmation timed out — auto-rejecting")
             self._log_entry({"event": "confirm_result", "confirmed": False,
                              "reason": "timeout"})
+            self._rejected_detections.append({"target": target, "feedback": ""})
             return False
         finally:
             self._confirm_future = None
 
-    def confirm_ack(self, confirmed: bool) -> None:
+    def confirm_ack(self, confirmed: bool, feedback: str = "") -> None:
         """Called by the debug bus when the user responds to the confirmation."""
         if self._confirm_future and not self._confirm_future.done():
-            self._confirm_future.set_result(confirmed)
+            self._confirm_future.set_result((confirmed, feedback))

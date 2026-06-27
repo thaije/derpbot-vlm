@@ -1130,15 +1130,19 @@ function showConfirmDialog(msg) {
   document.getElementById('confirm-img').src = frameSrc || '';
   document.getElementById('confirm-target').textContent = msg.target || '(unknown)';
   document.getElementById('confirm-reason').textContent = msg.reason || '';
+  document.getElementById('confirm-feedback').value = '';
   dlg.classList.add('visible');
   addMessage('msg-info', 'CONFIRM', `Robot found <b>${escapeHtml(msg.target || '?')}</b> — waiting for your confirmation...`);
 }
 
 function sendConfirmAck(confirmed) {
+  const feedback = document.getElementById('confirm-feedback').value.trim();
   document.getElementById('confirm-dialog').classList.remove('visible');
-  sendCmd({ type: 'confirm_target_ack', confirmed });
+  document.getElementById('confirm-feedback').value = '';
+  sendCmd({ type: 'confirm_target_ack', confirmed, feedback });
+  const fb = feedback ? ` (${escapeHtml(feedback)})` : '';
   addMessage(confirmed ? 'msg-info' : 'msg-warn', 'YOU',
-    confirmed ? 'Confirmed — target found!' : 'Rejected — continuing search');
+    confirmed ? 'Confirmed — target found!' : `Rejected — continuing search${fb}`);
 }
 
 // ── Init ──────────────────────────────────────────────────────────
@@ -1153,6 +1157,7 @@ addMessage('msg-system', 'PANEL', 'DerpBot panel initialised — waiting for age
     <img id="confirm-img" src="" alt="detection frame">
     <p>Target: <b id="confirm-target"></b></p>
     <p id="confirm-reason" style="font-style:italic"></p>
+    <input type="text" id="confirm-feedback" placeholder="Optional hint if wrong (e.g. 'it's in the kitchen')" style="width:100%;padding:6px 8px;margin-bottom:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;box-sizing:border-box">
     <div class="confirm-buttons">
       <button class="yes" onclick="sendConfirmAck(true)">Yes, found it!</button>
       <button class="no" onclick="sendConfirmAck(false)">No, keep searching</button>

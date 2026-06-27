@@ -228,7 +228,8 @@ class DebugBus:
             elif mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "ts": time.time()}))
             elif mtype == "confirm_target_ack":
-                self.agent.confirm_ack(msg.get("confirmed", False))
+                self.agent.confirm_ack(msg.get("confirmed", False),
+                                       msg.get("feedback", ""))
             else:
                 logger.warning("Unknown panel command: %s", mtype)
         except Exception as e:

@@ -394,6 +394,7 @@ class VLMClient:
         )
 
     def verify_candidate(self, image, target_name: str, location: str = "",
+                         rejected_hints: list = None,
                          verbose: bool = False) -> Optional[VerifyResult]:
         """Skeptical second call on the full camera image (#14).
 
@@ -421,6 +422,13 @@ class VLMClient:
             " Confirm or reject.\n"
             "Be strict; reject vaguely similar shapes."
         )
+        if rejected_hints:
+            user_prompt += "\n\nPreviously rejected by the user (do NOT confirm these):\n"
+            for hint in rejected_hints:
+                desc = hint["target"]
+                if hint.get("feedback"):
+                    desc += f" — {hint['feedback']}"
+                user_prompt += f"  ✗ {desc}\n"
 
         if verbose:
             logger.info("VERIFIER REQUEST · system prompt:\n%s", VERIFIER_SYSTEM_PROMPT)
