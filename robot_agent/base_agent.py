@@ -62,6 +62,7 @@ class BaseAgentConfig:
     debug_bus_port: Optional[int] = None
     teleop_only: bool = False
     run_dir: Optional[str] = None
+    confirm_with_user: bool = True
 
 
 class BaseRealAgent:
@@ -149,6 +150,11 @@ class BaseRealAgent:
         self._scanning: bool = False
         self._initial_scan_done: bool = False
 
+        # User confirmation: when confirm_with_user is True, the agent pauses
+        # after a verifier-confirmed sighting and waits for the user to
+        # acknowledge via the panel before declaring arrival.
+        self._confirm_future: Optional[asyncio.Future] = None
+
         # Callbacks (set by DebugBus if --debug-bus is active; None otherwise).
         self.on_frame: Optional[Callable[[Image.Image], None]] = None
         self.on_decision: Optional[Callable[[dict], None]] = None
@@ -159,6 +165,7 @@ class BaseRealAgent:
         self.on_battery_event: Optional[Callable[[dict], None]] = None
         self.on_phone_battery_event: Optional[Callable[[dict], None]] = None
         self.on_state_change: Optional[Callable[[dict], None]] = None
+        self.on_confirm_request: Optional[Callable[[dict], None]] = None
 
         # Wire transport hazard sink → agent
         self.transport.on_hazard = self._on_hazard
@@ -447,8 +454,17 @@ class BaseRealAgent:
                     if confirmed:
                         self._confirmed_count += 1
                         if decision.drive_distance_m <= self.config.arrive_dist_m:
-                            await self._on_arrived()
-                            continue  # _on_arrived switched to teleop; loop continues
+                            # Ask user to confirm before declaring arrival.
+                            user_ok = await self._wait_for_user_confirmation(
+                                self.config.target, frame_path,
+                                verify.reason)
+                            if user_ok:
+                                await self._on_arrived()
+                                continue
+                            else:
+                                logger.info("User rejected confirmation — continuing search")
+                                await self.transport.halt()
+                                self._consecutive_turns = 0
                 else:
                     logger.warning("Verifier returned None; treating as unconfirmed")
                     self._log_entry({"event": "vlm_error", "stage": "verifier"})
@@ -845,3 +861,48 @@ class BaseRealAgent:
             entry["t"] = time.time()
             self._log_fh.write(json.dumps(entry) + "\n")
             self._log_fh.flush()
+
+    # ── User confirmation ──────────────────────────────────────────────
+
+    def _emit_confirm_request(self, target: str, frame_path: str,
+                               reason: str) -> None:
+        """Ask the panel user to confirm the target is correct."""
+        if self.on_confirm_request:
+            self.on_confirm_request({
+                "target": target,
+                "frame": frame_path,
+                "reason": reason,
+            })
+
+    async def _wait_for_user_confirmation(self, target: str, frame_path: str,
+                                            reason: str) -> bool:
+        """Emit a confirmation request and wait for the user's response.
+
+        Returns True if the user confirmed, False if rejected or timed out.
+        Times out after 120s (auto-reject).
+        """
+        if not self.config.confirm_with_user:
+            return True
+
+        loop = asyncio.get_event_loop()
+        self._confirm_future = loop.create_future()
+        self._emit_confirm_request(target, frame_path, reason)
+        self._log_entry({"event": "confirm_request", "target": target})
+        logger.info("Waiting for user confirmation of '%s'...", target)
+
+        try:
+            result = await asyncio.wait_for(self._confirm_future, timeout=120.0)
+            self._log_entry({"event": "confirm_result", "confirmed": result})
+            return result
+        except asyncio.TimeoutError:
+            logger.warning("User confirmation timed out — auto-rejecting")
+            self._log_entry({"event": "confirm_result", "confirmed": False,
+                             "reason": "timeout"})
+            return False
+        finally:
+            self._confirm_future = None
+
+    def confirm_ack(self, confirmed: bool) -> None:
+        """Called by the debug bus when the user responds to the confirmation."""
+        if self._confirm_future and not self._confirm_future.done():
+            self._confirm_future.set_result(confirmed)

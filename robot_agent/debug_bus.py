@@ -77,6 +77,7 @@ class DebugBus:
         self.agent.on_battery_event = self._on_agent_battery
         self.agent.on_phone_battery_event = self._on_agent_phone_battery
         self.agent.on_state_change = self._on_agent_state
+        self.agent.on_confirm_request = self._on_agent_confirm_request
 
     # ── Agent callback → broadcast ──────────────────────────────────────
 
@@ -129,6 +130,10 @@ class DebugBus:
     def _on_agent_state(self, data: dict) -> None:
         self._last_state = data
         msg = {"type": "state", **data, "ts": time.time()}
+        asyncio.ensure_future(self._broadcast_json(msg))
+
+    def _on_agent_confirm_request(self, data: dict) -> None:
+        msg = {"type": "confirm_target", **data, "ts": time.time()}
         asyncio.ensure_future(self._broadcast_json(msg))
 
     # ── WS handler (panel → bus commands) ───────────────────────────────
@@ -222,6 +227,8 @@ class DebugBus:
                     await ws.send(FRAME_PREFIX + self._last_frame_jpeg)
             elif mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "ts": time.time()}))
+            elif mtype == "confirm_target_ack":
+                self.agent.confirm_ack(msg.get("confirmed", False))
             else:
                 logger.warning("Unknown panel command: %s", mtype)
         except Exception as e:

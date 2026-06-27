@@ -49,6 +49,8 @@ def main() -> None:
     parser.add_argument("--bump-threshold", type=float, default=2.5, help="IMU bump detection threshold factor")
     parser.add_argument("--log-file", default=None, help="JSONL log file path (default: <run_dir>/decisions.jsonl)")
     parser.add_argument("--run-dir", default=None, help="Run output directory (default: runs/<timestamp>)")
+    parser.add_argument("--no-confirm-user", dest="confirm_with_user", action="store_false",
+                        default=True, help="Skip user confirmation on target found (auto-arrive)")
     parser.add_argument("--debug-bus", type=int, default=None, metavar="PORT",
                         help="Start debug bus WS server on this port (for panel; #24)")
     parser.add_argument("--teleop-only", action="store_true", default=True,
@@ -87,6 +89,7 @@ def main() -> None:
         debug_bus_port=args.debug_bus,
         teleop_only=args.teleop_only,
         run_dir=args.run_dir,
+        confirm_with_user=args.confirm_with_user,
     )
 
     relay = PhoneRelay(host=config.ws_host, port=config.ws_port)

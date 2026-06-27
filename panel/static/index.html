@@ -493,6 +493,46 @@ kbd {
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Confirm dialog ── */
+#confirm-dialog {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+#confirm-dialog.visible { display: flex; }
+.confirm-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  max-width: 480px;
+  text-align: center;
+}
+.confirm-card img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.confirm-card h3 { margin: 0 0 8px; font-size: 14px; }
+.confirm-card p { color: var(--text-dim); font-size: 12px; margin: 0 0 16px; }
+.confirm-buttons { display: flex; gap: 12px; justify-content: center; }
+.confirm-buttons button {
+  padding: 8px 24px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+.confirm-buttons button.yes { border-color: #4ade80; color: #4ade80; }
+.confirm-buttons button.no { border-color: #f87171; color: #f87171; }
 </style>
 </head>
 <body>
@@ -640,6 +680,9 @@ function handleMessage(msg) {
       currentCapabilities = new Set(msg.capabilities || []);
       updateStatusLabel();
       applyCapabilities();
+      // Clear conversation from any previous run (agent restart / new run).
+      document.getElementById('conversation').innerHTML = '';
+      scrollLocked = true;
       addMessage('msg-info', 'CONNECT', `Backend: <b>${escapeHtml(msg.backend || '?')}</b>${msg.capabilities ? ' · ' + escapeHtml(msg.capabilities.join(', ')) : ''}`);
       break;
     case 'state':
@@ -676,6 +719,9 @@ function handleMessage(msg) {
       break;
     case 'toggle_ack':
       addMessage('msg-info', 'TOGGLE', `${escapeHtml(msg.which)} = <b>${msg.value}</b>`);
+      break;
+    case 'confirm_target':
+      showConfirmDialog(msg);
       break;
   }
 }
@@ -782,6 +828,12 @@ function initScrollLock() {
       document.getElementById('jump-latest').classList.add('visible');
     }
   });
+  // Re-scroll to bottom when locked and content size changes (images loading,
+  // details expanding, etc.) — prevents async image load from unlocking.
+  const ro = new ResizeObserver(() => {
+    if (scrollLocked) conv.scrollTop = conv.scrollHeight;
+  });
+  ro.observe(conv);
 }
 
 function scrollToLatest() {
@@ -838,7 +890,7 @@ function updateDecision(msg) {
   ].filter(Boolean).join(' &nbsp;');
   const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
   const frameSrc = msg.frame ? msg.frame.replace(/^.*\/frames\//, '/frames/') : '';
-  const frameHtml = frameSrc ? `<img src="${escapeHtml(frameSrc)}" style="max-width:100%;border-radius:6px;margin-top:6px">` : '';
+  const frameHtml = frameSrc ? `<img src="${escapeHtml(frameSrc)}?t=${Date.now()}" style="max-width:100%;border-radius:6px;margin-top:6px" loading="eager">` : '';
   const promptHtml = msg.prompt
     ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--text-dim);font-size:11px;opacity:0.7">prompt</summary><pre style="white-space:pre-wrap;color:var(--text-dim);font-size:10px;margin-top:4px;padding:6px;border-radius:4px;background:rgba(0,0,0,0.2)">${escapeHtml(msg.prompt)}</pre></details>`
     : '';
@@ -1071,10 +1123,42 @@ function escapeHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Confirm dialog ─────────────────────────────────────────────────
+function showConfirmDialog(msg) {
+  const dlg = document.getElementById('confirm-dialog');
+  const frameSrc = msg.frame ? msg.frame.replace(/^.*\/frames\//, '/frames/') + '?t=' + Date.now() : '';
+  document.getElementById('confirm-img').src = frameSrc || '';
+  document.getElementById('confirm-target').textContent = msg.target || '(unknown)';
+  document.getElementById('confirm-reason').textContent = msg.reason || '';
+  dlg.classList.add('visible');
+  addMessage('msg-info', 'CONFIRM', `Robot found <b>${escapeHtml(msg.target || '?')}</b> — waiting for your confirmation...`);
+}
+
+function sendConfirmAck(confirmed) {
+  document.getElementById('confirm-dialog').classList.remove('visible');
+  sendCmd({ type: 'confirm_target_ack', confirmed });
+  addMessage(confirmed ? 'msg-info' : 'msg-warn', 'YOU',
+    confirmed ? 'Confirmed — target found!' : 'Rejected — continuing search');
+}
+
 // ── Init ──────────────────────────────────────────────────────────
 initScrollLock();
 connectWS();
 addMessage('msg-system', 'PANEL', 'DerpBot panel initialised — waiting for agent...');
 </script>
+
+<div id="confirm-dialog">
+  <div class="confirm-card">
+    <h3>Is this the correct object?</h3>
+    <img id="confirm-img" src="" alt="detection frame">
+    <p>Target: <b id="confirm-target"></b></p>
+    <p id="confirm-reason" style="font-style:italic"></p>
+    <div class="confirm-buttons">
+      <button class="yes" onclick="sendConfirmAck(true)">Yes, found it!</button>
+      <button class="no" onclick="sendConfirmAck(false)">No, keep searching</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
