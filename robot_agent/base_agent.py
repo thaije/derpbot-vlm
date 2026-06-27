@@ -314,7 +314,7 @@ class BaseRealAgent:
             self._emit_frame(img)
             frame_path = self._save_frame(img, tag=f"scan{step}")
 
-            prompt = self._build_prompt()
+            prompt = self._build_prompt(scan=True)
             t0 = time.time()
             decision = await loop.run_in_executor(
                 None, self._vlm_client.query, img, prompt)
@@ -414,6 +414,7 @@ class BaseRealAgent:
                 self._apply_heading_delta(-back_deg)
                 await self.transport.rotate(-back_deg,
                                             timeout_s=SCAN_ROTATE_TIMEOUT_S)
+                await self.transport.wait_standstill()
             logger.info("SCAN: forced drive %.1fm toward step %d's open path",
                         dist, best_step + 1)
             self._log_entry({"event": "forced_drive", "dist": dist,
@@ -809,7 +810,7 @@ class BaseRealAgent:
 
     # ── Prompt ───────────────────────────────────────────────────────────
 
-    def _build_prompt(self) -> str:
+    def _build_prompt(self, scan: bool = False) -> str:
         natural = self.config.target.replace("_", " ")
         lines = [
             f"Target: {natural}",
@@ -822,13 +823,27 @@ class BaseRealAgent:
             "  - Is the target visible? Scan floor, corners, walls, edges. The target may be",
             "    small or low-contrast. If you see ANY object that plausibly matches, set",
             "    target_visible=true and fill target_location.",
-            "  - Pick ONE action: turn in place OR drive straight — never both.",
-            "    turn_angle_deg: -90/-60/-30/0/30/60/90 (+=right). drive_distance_m: 0.0-2.0 m.",
-            "    To turn: set turn_angle_deg ≠ 0, drive_distance_m = 0.0.",
-            "    To drive: set turn_angle_deg = 0, drive_distance_m > 0.0.",
-            "    Use a turn when facing a wall or needing to search a new area.",
-            "    Use drive when the target is visible and ahead, or to explore forward.",
         ]
+        if scan:
+            lines += [
+                "  - You are in a 360° scan sweep. The robot will rotate to the next",
+                "    position automatically — do NOT suggest a turn. Instead, if the path",
+                "    ahead is open and clear, suggest driving forward (turn_angle_deg=0,",
+                "    drive_distance_m > 0). The robot will drive into the most open",
+                "    direction after the scan completes. If facing a wall or obstacle,",
+                "    set drive_distance_m=0.0 (the scan will rotate to the next position).",
+                "  - drive_distance_m: 0.0-2.0 m. Set 0.0 only if blocked by a wall/obstacle.",
+                "    Set > 0 if there is visible open floor space ahead.",
+            ]
+        else:
+            lines += [
+                "  - Pick ONE action: turn in place OR drive straight — never both.",
+                "    turn_angle_deg: -90/-60/-30/0/30/60/90 (+=right). drive_distance_m: 0.0-2.0 m.",
+                "    To turn: set turn_angle_deg ≠ 0, drive_distance_m = 0.0.",
+                "    To drive: set turn_angle_deg = 0, drive_distance_m > 0.0.",
+                "    Use a turn when facing a wall or needing to search a new area.",
+                "    Use drive when the target is visible and ahead, or to explore forward.",
+            ]
         # Include recent action history so the VLM can detect and break
         # out of loops (e.g. turning left ↔ right in a dead end).
         if self._decision_history:

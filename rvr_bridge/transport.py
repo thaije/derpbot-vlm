@@ -215,7 +215,7 @@ class RvrTransport(RobotTransport):
             elapsed_ms += step_ms
             # Bump check handled by the agent via _hazard_event
 
-        await self._send_stop(heading=0)
+        await self._send_stop(heading=self._agent_heading())
 
     async def rotate(self, angle_deg: float, *, timeout_s: float) -> None:
         """In-place turn.

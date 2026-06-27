@@ -832,11 +832,13 @@ const MAX_MSGS = 200;
 let currentTarget = null;
 let currentTargetDesc = null;
 let scrollLocked = true;  // true = auto-scroll to bottom on new messages
+let programmaticScroll = false;  // suppresses scroll handler during programmatic scrolls
 
 function initScrollLock() {
   const conv = document.getElementById('conversation');
   conv.addEventListener('scroll', () => {
-    const atBottom = conv.scrollHeight - conv.scrollTop - conv.clientHeight < 40;
+    if (programmaticScroll) return;  // ignore scrolls caused by our own scrollTop set
+    const atBottom = conv.scrollHeight - conv.scrollTop - conv.clientHeight < 60;
     if (atBottom) {
       scrollLocked = true;
       document.getElementById('jump-latest').classList.remove('visible');
@@ -848,16 +850,23 @@ function initScrollLock() {
   // Re-scroll to bottom when locked and content size changes (images loading,
   // details expanding, etc.) — prevents async image load from unlocking.
   const ro = new ResizeObserver(() => {
-    if (scrollLocked) conv.scrollTop = conv.scrollHeight;
+    if (scrollLocked) {
+      programmaticScroll = true;
+      conv.scrollTop = conv.scrollHeight;
+      // clear after a tick so the scroll event from this assignment is suppressed
+      requestAnimationFrame(() => { programmaticScroll = false; });
+    }
   });
   ro.observe(conv);
 }
 
 function scrollToLatest() {
   const conv = document.getElementById('conversation');
+  programmaticScroll = true;
   conv.scrollTop = conv.scrollHeight;
   scrollLocked = true;
   document.getElementById('jump-latest').classList.remove('visible');
+  requestAnimationFrame(() => { programmaticScroll = false; });
 }
 
 function updateStatusLabel() {
@@ -886,7 +895,11 @@ function addMessage(cls, tag, bodyHtml, metaText) {
   `;
   conv.appendChild(el);
   while (conv.children.length > MAX_MSGS) conv.removeChild(conv.firstChild);
-  if (scrollLocked) conv.scrollTop = conv.scrollHeight;
+  if (scrollLocked) {
+    programmaticScroll = true;
+    conv.scrollTop = conv.scrollHeight;
+    requestAnimationFrame(() => { programmaticScroll = false; });
+  }
 }
 
 function updateDecision(msg) {
