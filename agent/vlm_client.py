@@ -423,12 +423,16 @@ class VLMClient:
             "Be strict; reject vaguely similar shapes."
         )
         if rejected_hints:
-            user_prompt += "\n\nPreviously rejected by the user (do NOT confirm these):\n"
+            user_prompt += "\n\nPreviously rejected by the user (do NOT confirm the same object again):\n"
             for hint in rejected_hints:
-                desc = hint["target"]
+                parts = [f"✗ {hint['target']}"]
+                if hint.get("location"):
+                    parts.append(f"at {hint['location']}")
+                if hint.get("description"):
+                    parts.append(f"({hint['description'][:80]})")
                 if hint.get("feedback"):
-                    desc += f" — {hint['feedback']}"
-                user_prompt += f"  ✗ {desc}\n"
+                    parts.append(f"user: {hint['feedback']}")
+                user_prompt += "  " + " — ".join(parts) + "\n"
 
         if verbose:
             logger.info("VERIFIER REQUEST · system prompt:\n%s", VERIFIER_SYSTEM_PROMPT)

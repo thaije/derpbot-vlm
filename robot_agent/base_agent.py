@@ -199,6 +199,18 @@ class BaseRealAgent:
                 "model": self.config.model,
                 "run_dir": str(self.run_dir),
             })
+            # Log the system prompts (loaded from shared/prompts/) so they're
+            # visible in the run log alongside the user prompts that are logged
+            # per-decision.
+            try:
+                _prompts_dir = _PROJECT_ROOT / "shared" / "prompts"
+                det_prompt = (_prompts_dir / "detection_system.txt").read_text()
+                ver_prompt = (_prompts_dir / "verifier_system.txt").read_text()
+                self._log_entry({"event": "system_prompts",
+                                 "detection": det_prompt,
+                                 "verifier": ver_prompt})
+            except Exception as e:
+                logger.warning("Could not log system prompts: %s", e)
 
         logger.info("Waiting for %s connection...", self.transport.backend_name)
         while self._running and not self._is_connected():
@@ -462,7 +474,7 @@ class BaseRealAgent:
                         self._confirmed_count += 1
                         if decision.drive_distance_m <= self.config.arrive_dist_m:
                             # Ask user to confirm before declaring arrival.
-                            user_ok = await self._wait_for_user_confirmation(
+                            user_ok, feedback = await self._wait_for_user_confirmation(
                                 self.config.target, frame_path,
                                 verify.reason)
                             if user_ok:
@@ -470,6 +482,15 @@ class BaseRealAgent:
                                 continue
                             else:
                                 logger.info("User rejected confirmation — continuing search")
+                                # Store a description of the rejected object
+                                # so the VLM + verifier can avoid re-flagging it.
+                                desc = decision.reason
+                                self._rejected_detections.append({
+                                    "target": self.config.target,
+                                    "description": desc[:200],
+                                    "location": decision.target_location or "",
+                                    "feedback": feedback,
+                                })
                                 await self.transport.halt()
                                 self._consecutive_turns = 0
                 else:
@@ -797,10 +818,17 @@ class BaseRealAgent:
             lines.append("")
             lines.append("Previously rejected by the user (do NOT flag these as the target again):")
             for r in self._rejected_detections:
-                desc = r["target"]
-                if r["feedback"]:
-                    desc += f" — {r['feedback']}"
-                lines.append(f"  ✗ {desc}")
+                desc = r.get("description", r["target"])
+                loc = r.get("location", "")
+                fb = r.get("feedback", "")
+                parts = [f"✗ {r['target']}"]
+                if loc:
+                    parts.append(f"at {loc}")
+                if desc:
+                    parts.append(f"({desc[:80]})")
+                if fb:
+                    parts.append(f"user: {fb}")
+                lines.append("  " + " — ".join(parts))
         lines.append("Reply JSON only.")
         return "\n".join(lines)
 
@@ -892,14 +920,14 @@ class BaseRealAgent:
             })
 
     async def _wait_for_user_confirmation(self, target: str, frame_path: str,
-                                            reason: str) -> bool:
+                                            reason: str) -> tuple:
         """Emit a confirmation request and wait for the user's response.
 
-        Returns True if the user confirmed, False if rejected or timed out.
+        Returns (confirmed: bool, feedback: str).
         Times out after 120s (auto-reject).
         """
         if not self.config.confirm_with_user:
-            return True
+            return (True, "")
 
         loop = asyncio.get_event_loop()
         self._confirm_future = loop.create_future()
@@ -912,18 +940,12 @@ class BaseRealAgent:
             confirmed, feedback = result
             self._log_entry({"event": "confirm_result", "confirmed": confirmed,
                              "feedback": feedback})
-            if not confirmed:
-                self._rejected_detections.append({
-                    "target": target,
-                    "feedback": feedback,
-                })
-            return confirmed
+            return (confirmed, feedback)
         except asyncio.TimeoutError:
             logger.warning("User confirmation timed out — auto-rejecting")
             self._log_entry({"event": "confirm_result", "confirmed": False,
                              "reason": "timeout"})
-            self._rejected_detections.append({"target": target, "feedback": ""})
-            return False
+            return (False, "")
         finally:
             self._confirm_future = None
 
