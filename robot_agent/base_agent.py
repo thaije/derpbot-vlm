@@ -148,6 +148,8 @@ class BaseRealAgent:
         # Loop detection: count consecutive turns without vis=True.
         self._consecutive_turns: int = 0
         self._scanning: bool = False
+        self._scan_step: int = 0
+        self._scan_total: int = 0
         self._initial_scan_done: bool = False
 
         # User confirmation: when confirm_with_user is True, the agent pauses
@@ -280,21 +282,25 @@ class BaseRealAgent:
         VLM query at each of SCAN_STEPS positions.  Breaks early if the
         target is spotted and confirmed.
 
-        Returns the last VLM decision dict if the scan completed without
-        finding the target (so the caller can use it for a forced drive),
+        Returns the VLM decision with the largest drive_distance_m across
+        all scan steps (so the caller can force a drive into open space),
         or None if the scan was interrupted / target found.
         """
         self._scanning = True
+        self._scan_step = 0
+        self._scan_total = SCAN_STEPS
         self._log_entry({"event": "scan_start", "reason": reason,
                          "steps": SCAN_STEPS, "step_deg": SCAN_STEP_DEG})
         logger.info("SCAN: starting 360° sweep (%s)", reason)
 
         loop = asyncio.get_event_loop()
-        last_decision = None
+        best_drive = None  # decision with the largest drive_distance_m
 
         for step in range(SCAN_STEPS):
             if not self._running or self._teleop_active:
                 break
+
+            self._scan_step = step + 1
 
             await self.transport.wait_standstill()
             img = await self.transport.capture_frame()
@@ -362,11 +368,18 @@ class BaseRealAgent:
                         self._scanning = False
                         return None  # caller proceeds with the decision
 
-            last_decision = {
-                "decision": decision,
-                "frame_path": frame_path,
-                "prompt": prompt,
-            }
+            # Track the decision with the largest drive distance for a
+            # post-scan forced drive (the robot drives into the most open
+            # direction seen during the sweep).
+            if decision.drive_distance_m > 0 and (
+                best_drive is None
+                or decision.drive_distance_m > best_drive["decision"].drive_distance_m
+            ):
+                best_drive = {
+                    "decision": decision,
+                    "frame_path": frame_path,
+                    "prompt": prompt,
+                }
 
             # Rotate to next position (skip after last step)
             if step < SCAN_STEPS - 1:
@@ -376,9 +389,10 @@ class BaseRealAgent:
 
         self._consecutive_turns = 0
         self._scanning = False
+        self._scan_step = 0
         self._log_entry({"event": "scan_end", "reason": "complete"})
         logger.info("SCAN: complete (no target found)")
-        return last_decision
+        return best_drive
 
     # ── Autonomous loop ──────────────────────────────────────────────────
 
@@ -779,7 +793,7 @@ class BaseRealAgent:
     def _build_prompt(self) -> str:
         natural = self.config.target.replace("_", " ")
         lines = [
-            f"Target: {self.config.target}  (natural language: \"{natural}\")",
+            f"Target: {natural}",
         ]
         if self.config.target_description:
             lines.append(f"Description: {self.config.target_description}")
@@ -868,6 +882,9 @@ class BaseRealAgent:
                 "latency_ms": latency_ms,
                 "frame": frame_path,
                 "prompt": prompt,
+                "scanning": self._scanning,
+                "scan_step": self._scan_step,
+                "scan_total": self._scan_total,
             })
 
     def _emit_verifier(self, verify, latency_ms: float) -> None:
@@ -896,6 +913,8 @@ class BaseRealAgent:
             "confirmed_count": self._confirmed_count,
             "running": self._running,
             "scanning": self._scanning,
+            "scan_step": self._scan_step,
+            "scan_total": self._scan_total,
             "consecutive_turns": self._consecutive_turns,
             "vlm_ready": self._vlm_client is not None,
             "backend": self.transport.backend_name,

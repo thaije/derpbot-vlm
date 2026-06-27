@@ -274,6 +274,8 @@ body {
 .msg.msg-vlm .msg-tag { color: var(--text); }
 .msg.msg-vlm .vis-y { color: var(--green); font-weight: 700; }
 .msg.msg-vlm .vis-n { color: var(--text-dim); }
+.msg.msg-vlm.msg-scan { border-left-color: #60a5fa; }
+.msg.msg-vlm.msg-scan .msg-tag { color: #60a5fa; }
 
 .msg.msg-verifier.confirmed { border-left-color: var(--green); }
 .msg.msg-verifier.rejected { border-left-color: var(--red); }
@@ -897,13 +899,18 @@ function updateDecision(msg) {
     turnStr,
     distStr,
   ].filter(Boolean).join(' &nbsp;');
+  // Show scan step indicator if this decision is part of a scan sweep
+  const scanTag = msg.scanning && msg.scan_total
+    ? `VLM · SCAN ${msg.scan_step}/${msg.scan_total}`
+    : 'VLM';
   const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
   const frameSrc = msg.frame ? msg.frame.replace(/^.*\/frames\//, '/frames/') : '';
   const frameHtml = frameSrc ? `<img src="${escapeHtml(frameSrc)}?t=${Date.now()}" style="max-width:100%;border-radius:6px;margin-top:6px" loading="eager">` : '';
   const promptHtml = msg.prompt
     ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--text-dim);font-size:11px;opacity:0.7">prompt</summary><pre style="white-space:pre-wrap;color:var(--text-dim);font-size:10px;margin-top:4px;padding:6px;border-radius:4px;background:rgba(0,0,0,0.2)">${escapeHtml(msg.prompt)}</pre></details>`
     : '';
-  addMessage('msg-vlm', 'VLM', parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : '') + frameHtml + promptHtml, meta);
+  const msgClass = msg.scanning ? 'msg-vlm msg-scan' : 'msg-vlm';
+  addMessage(msgClass, scanTag, parts + (msg.reason ? `<div class="reason">${escapeHtml(msg.reason)}</div>` : '') + frameHtml + promptHtml, meta);
 
   if (vis && msg.target_location) {
     flashOverlay(`📍 ${msg.target_location}`, '');
