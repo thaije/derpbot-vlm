@@ -94,6 +94,12 @@ class RvrTransport(RobotTransport):
         self._latest_frame: Optional[Image.Image] = None
         self._on_frame_cb: Optional[callable] = None  # type: ignore[assignment]
 
+        # Last stop heading — dedupes redundant StopMessage sends (the teleop
+        # idle tick fires ~20 Hz; without this the phone log fills with
+        # "STOP hdg=0". The RVR firmware holds heading after a single stop, so
+        # repeating an identical stop is pure noise.
+        self._last_stop_heading: Optional[int] = None
+
     @property
     def connection_state(self) -> str:
         return self.relay.ble_state
@@ -125,6 +131,24 @@ class RvrTransport(RobotTransport):
     @staticmethod
     def _norm_heading(h: int) -> int:
         return h % 360
+
+    async def _send_stop(self, heading: int) -> None:
+        """Send a StopMessage, deduping identical consecutive stops.
+
+        The RVR firmware's yaw-hold keeps the chassis at the last commanded
+        heading after a single stop, so repeating ``StopMessage(h)`` with the
+        same ``h`` is redundant. The teleop idle tick (20 Hz) would otherwise
+        flood the phone log with "STOP hdg=0". A drive/rotate command clears
+        the dedup so the first stop after motion always sends.
+        """
+        if self._last_stop_heading == heading:
+            return
+        self._last_stop_heading = heading
+        await self.relay.send(StopMessage(heading=heading))
+
+    def _clear_stop_dedup(self) -> None:
+        """Invalidate the stop-dedup so the next stop always sends."""
+        self._last_stop_heading = None
 
     async def start(self) -> None:
         await self.relay.start()
@@ -177,6 +201,7 @@ class RvrTransport(RobotTransport):
             max(int(distance_m / self.speed_mps * 1000), 200),
             self.max_drive_ms,
         )
+        self._clear_stop_dedup()
         await self.relay.send(DriveMessage(
             speed=self.drive_speed_byte,
             heading=self._agent_heading(),
@@ -190,7 +215,7 @@ class RvrTransport(RobotTransport):
             elapsed_ms += step_ms
             # Bump check handled by the agent via _hazard_event
 
-        await self.relay.send(StopMessage(heading=0))
+        await self._send_stop(heading=0)
 
     async def rotate(self, angle_deg: float, *, timeout_s: float) -> None:
         """In-place turn.
@@ -218,10 +243,11 @@ class RvrTransport(RobotTransport):
     async def _rotate_heading(self, timeout_s: float) -> None:
         """Closed-loop rotate via firmware yaw controller."""
         heading = self._agent_heading()
+        self._clear_stop_dedup()
         await self.relay.send(DriveMessage(
             speed=0, heading=heading, flags=DRIVE_FLAGS_FORWARD))
         await self.wait_standstill(timeout_s=timeout_s, settle_s=0.2)
-        await self.relay.send(StopMessage(heading=heading))
+        await self._send_stop(heading=heading)
 
     async def _rotate_raw(self, angle_deg: float, timeout_s: float) -> None:
         """Raw-motors pivot at ``rotate_speed``.  Timed turn — duration
@@ -234,11 +260,12 @@ class RvrTransport(RobotTransport):
             l_mode, r_mode = 2, 1   # reverse, forward
         else:
             l_mode, r_mode = 1, 2   # forward, reverse
+        self._clear_stop_dedup()
         await self.relay.send(RawMotorsMessage(
             l_mode=l_mode, l_speed=speed,
             r_mode=r_mode, r_speed=speed))
         await asyncio.sleep(duration_ms / 1000.0)
-        await self.relay.send(StopMessage(heading=self._agent_heading()))
+        await self._send_stop(heading=self._agent_heading())
 
     async def teleop_step(self, lin: float, turn: float) -> None:
         """One tick of teleop drive (~20 Hz).  Both zero → halt.
@@ -261,20 +288,22 @@ class RvrTransport(RobotTransport):
         if abs(lin) > 0.05:
             speed = max(int(abs(lin) * self.drive_speed_byte), 1)
             flags = DRIVE_FLAGS_REVERSE if lin < 0 else DRIVE_FLAGS_FORWARD
+            self._clear_stop_dedup()
             await self.relay.send(DriveMessage(
                 speed=speed, heading=heading, flags=flags))
             return
 
         if abs(turn) > 0.05:
             # Turn only: speed 0 holds the heading while rotating to it.
+            self._clear_stop_dedup()
             await self.relay.send(DriveMessage(
                 speed=0, heading=heading, flags=DRIVE_FLAGS_FORWARD))
             return
 
-        await self.relay.send(StopMessage(heading=heading))
+        await self._send_stop(heading=heading)
 
     async def halt(self) -> None:
-        await self.relay.send(StopMessage(heading=self._agent_heading()))
+        await self._send_stop(heading=self._agent_heading())
 
     async def set_status(self, kind: str, **kw) -> None:
         if kind == "torch":

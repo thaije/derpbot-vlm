@@ -774,8 +774,6 @@ function updateBLE(state) {
   if (state !== lastBleWarned) {
     if (state === 'unavailable') {
       addMessage('msg-warn', 'BLE', '⚠ Bluetooth unavailable on phone — enable it manually to connect to the robot');
-    } else if (state === 'enabling') {
-      addMessage('msg-system', 'BLE', 'Turning Bluetooth on…');
     }
     lastBleWarned = state;
   }

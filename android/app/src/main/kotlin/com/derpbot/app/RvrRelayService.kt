@@ -136,6 +136,16 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         notifyUi()
     }
 
+    /**
+     * Retry the BLE scan now that the user has (presumably) enabled Bluetooth
+     * via the system dialog. Called by [RelayActivity] after the
+     * `ACTION_REQUEST_ENABLE` result callback fires. No-op in camera-only mode.
+     */
+    fun retryBleIfEnabled() {
+        if (cameraOnly || relay == null) return
+        connection.retryIfEnabled()
+    }
+
     fun disconnect() {
         relay?.stop()
         relay = null
@@ -156,20 +166,9 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         bleState = state.name.lowercase()
         relay?.sendBleState(state.name.lowercase())
         if (state == RvrBleConnection.State.READY) connection.send(commands.wake())
-        if (state == RvrBleConnection.State.UNAVAILABLE || state == RvrBleConnection.State.ENABLING) {
+        if (state == RvrBleConnection.State.UNAVAILABLE) {
             // Surface a clear warning on the app screen + panel.
-            val msg = when (state) {
-                RvrBleConnection.State.ENABLING ->
-                    "Turning Bluetooth on… enable in Settings if this fails"
-                RvrBleConnection.State.UNAVAILABLE ->
-                    "⚠ Bluetooth unavailable — enable it manually to connect to the robot"
-                else -> ""
-            }
-            if (msg.isNotEmpty()) {
-                appendLog(msg)
-                // Panel-level warning (separate from ble_state line).
-                relay?.sendBleState(state.name.lowercase())
-            }
+            appendLog("⚠ Bluetooth unavailable — enable it on the phone, then tap Connect")
         }
         runOnUiThread { refreshStatus() }
     }
@@ -245,7 +244,7 @@ class RvrRelayService : LifecycleService(), RvrBleConnection.Listener {
         val wsLabel = if (wsConnected) "connected" else "disconnected"
         statusText = buildString {
             append("BLE: $bleLabel  ·  WS: $wsLabel")
-            if (!cameraOnly && (bleState == "unavailable" || bleState == "enabling")) {
+            if (!cameraOnly && bleState == "unavailable") {
                 append("  ·  ⚠ enable Bluetooth on the phone")
             }
         }

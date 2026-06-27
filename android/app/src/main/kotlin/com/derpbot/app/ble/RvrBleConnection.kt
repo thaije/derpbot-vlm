@@ -49,7 +49,7 @@ class RvrBleConnection(
         fun onError(message: String)
     }
 
-    enum class State { IDLE, ENABLING, SCANNING, CONNECTING, DISCOVERING, READY, DISCONNECTED, UNAVAILABLE }
+    enum class State { IDLE, SCANNING, CONNECTING, DISCOVERING, READY, DISCONNECTED, UNAVAILABLE }
 
     private val main = Handler(Looper.getMainLooper())
     private val adapter: BluetoothAdapter? =
@@ -65,9 +65,6 @@ class RvrBleConnection(
             main.post { listener.onStateChange(value) }
         }
 
-    /** Number of [BluetoothAdapter.enable] attempts in the current launch. */
-    private var enableAttempts = 0
-
     /** Current state, for callers that need it outside an [onStateChange] push. */
     val currentState: State get() = state
 
@@ -81,57 +78,33 @@ class RvrBleConnection(
             return
         }
         if (!adapter!!.isEnabled) {
-            enableBluetoothWithRetry()
+            // We cannot turn BT on programmatically on Android 13+ — the activity
+            // is responsible for launching ACTION_REQUEST_ENABLE before starting
+            // the relay. If we get here off, surface UNAVAILABLE so the UI warns
+            // the user and they can retry once BT is on.
+            listener.onError("Bluetooth is off — enable it, then tap Connect")
+            state = State.UNAVAILABLE
             return
         }
         beginScan()
     }
 
     /**
-     * Attempt to turn Bluetooth on automatically at launch (#28).
-     *
-     * `BluetoothAdapter.enable()` is async and returns false if the system
-     * refuses (device policy, airplane mode, or BT already turning on). We
-     * retry a bounded number of times, polling adapter state between attempts.
-     * If the stack never comes up we surface [State.UNAVAILABLE] so the app
-     * and panel can warn the user to enable Bluetooth manually.
+     * Re-check adapter state and start scanning if BT is now on. Called by the
+     * activity after the user grants the system "Turn on Bluetooth" dialog.
      */
     @SuppressLint("MissingPermission")
-    private fun enableBluetoothWithRetry() {
-        state = State.ENABLING
-        Log.i(TAG, "Bluetooth off — requesting enable (attempt ${enableAttempts + 1}/$MAX_ENABLE_ATTEMPTS)")
-        val turnedOn = try { adapter!!.enable() } catch (e: SecurityException) {
-            Log.w(TAG, "enable() blocked: ${e.message}")
-            false
-        }
-        // enable() returns false when the stack refuses; retry after a delay.
-        if (!turnedOn) {
-            scheduleEnableRetry("enable() returned false")
-            return
-        }
-        // enable() returned true — the stack is turning on. Poll until ready.
-        main.postDelayed({ waitForAdapterReady() }, ENABLE_POLL_MS)
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun waitForAdapterReady() {
-        if (adapter?.isEnabled == true) {
-            Log.i(TAG, "Bluetooth ready")
-            beginScan()
-            return
-        }
-        scheduleEnableRetry("adapter still off after enable()")
-    }
-
-    private fun scheduleEnableRetry(reason: String) {
-        enableAttempts += 1
-        if (enableAttempts > MAX_ENABLE_ATTEMPTS) {
-            listener.onError("Bluetooth is off — enable it in Settings ($reason)")
+    fun retryIfEnabled() {
+        if (adapter == null) {
             state = State.UNAVAILABLE
             return
         }
-        Log.w(TAG, "Retry enable: $reason (attempt $enableAttempts/$MAX_ENABLE_ATTEMPTS)")
-        main.postDelayed({ enableBluetoothWithRetry() }, ENABLE_RETRY_DELAY_MS)
+        if (adapter!!.isEnabled) {
+            startScanAndConnect()
+        } else {
+            listener.onError("Bluetooth still off — enable it, then tap Connect")
+            state = State.UNAVAILABLE
+        }
     }
 
     private fun beginScan() {
@@ -289,12 +262,6 @@ class RvrBleConnection(
     companion object {
         private const val TAG = "RvrBle"
         private const val RVR_NAME_PREFIX = "RV-"
-        /** Max [BluetoothAdapter.enable] attempts before giving up. */
-        private const val MAX_ENABLE_ATTEMPTS = 3
-        /** Delay between enable retries. */
-        private const val ENABLE_RETRY_DELAY_MS = 1500L
-        /** Delay before re-checking adapter state after enable(). */
-        private const val ENABLE_POLL_MS = 1500L
 
         // Sphero v2 API service + command/notify characteristic (from spherov2.py).
         val SERVICE_UUID: UUID = UUID.fromString("00010001-574f-4f20-5370-6865726f2121")

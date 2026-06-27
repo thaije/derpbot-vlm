@@ -1,6 +1,7 @@
 package com.derpbot.app
 
 import android.Manifest
+import android.bluetooth.BluetoothManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -56,13 +57,11 @@ class RelayActivity : AppCompatActivity() {
         override fun onUiUpdate() {
             val s = service ?: return
             status.text = s.statusText
-            // Tint the status line red while Bluetooth is unavailable/enabling so
-            // the warning is obvious on the dim logo screen (#28).
-            val ble = s.bleState
-            val warn = ble == "unavailable" || ble == "enabling"
+            // Tint the status line red while Bluetooth is unavailable so the
+            // warning is obvious on the dim logo screen (#28).
+            val warn = s.bleState == "unavailable"
             status.setTextColor(
-                if (ble == "unavailable") Color.parseColor("#e05a4a")
-                else if (ble == "enabling") Color.parseColor("#d9a13a")
+                if (warn) Color.parseColor("#e05a4a")
                 else Color.parseColor("#cfc8b8")
             )
             status.textSize = if (warn) 18f else 16f
@@ -89,18 +88,73 @@ class RelayActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         if (grants.values.all { it }) {
-            startRelayService()
+            ensureBluetoothThenStart()
         } else status.text = "Permissions denied — need BLE + camera"
     }
 
     /**
+     * System "Turn on Bluetooth" dialog. Android 13+ blocks
+     * [BluetoothAdapter.enable] for non-privileged apps, so we ask the user
+     * via the standard [android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE]
+     * intent. On grant we proceed; on denial we still start/retry so the
+     * service surfaces [State.UNAVAILABLE] and the UI shows the warning.
+     *
+     * [btEnableForRetry] selects between the initial-start path and the
+     * manual-Connect retry path (the relay already running).
+     */
+    private var btEnableForRetry = false
+
+    private val btEnableLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val enabled = result.resultCode == android.app.Activity.RESULT_OK
+        if (!enabled) {
+            // BT still off — proceed anyway; the service's scan will surface
+            // UNAVAILABLE and the UI will show the warning + Connect to retry.
+        }
+        if (btEnableForRetry) {
+            service?.retryBleIfEnabled() ?: startRelayService()
+        } else {
+            startRelayService()
+        }
+        btEnableForRetry = false
+    }
+
+    /** True if the device has Bluetooth on right now. */
+    private fun bluetoothOn(): Boolean {
+        val mgr = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        return mgr?.adapter?.isEnabled == true
+    }
+
+    /** No-Bluetooth flag for camera-only mode (skip the dialog). */
+    private fun isCameraOnly(): Boolean =
+        getIntent().getBooleanExtra(RvrRelayService.EXTRA_CAMERA_ONLY, false)
+
+    /**
+     * Gate relay start on Bluetooth being enabled. Camera-only mode skips
+     * the check. If BT is off, launch the system enable dialog; the result
+     * callback starts the service.
+     */
+    private fun ensureBluetoothThenStart() {
+        if (isCameraOnly() || bluetoothOn()) {
+            startRelayService()
+            return
+        }
+        btEnableForRetry = false
+        val enableIntent = Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+        btEnableLauncher.launch(enableIntent)
+    }
+
+    /**
      * Auto-start on launch (matches the pre-#26 activity behaviour): if all
-     * runtime permissions are already granted, start the foreground service
-     * immediately. Otherwise request permissions first — the granted-callback
-     * starts the service. This keeps `drive_test.py`'s no-touch restart working.
+     * runtime permissions are already granted, gate on Bluetooth being on
+     * (system enable dialog if not — Android 13+ blocks programmatic enable),
+     * then start the foreground service. Otherwise request permissions first
+     * — the granted-callback runs the Bluetooth gate. This keeps
+     * `drive_test.py`'s no-touch restart working (the BT dialog is one tap).
      */
     private fun autoStartIfReady() {
-        val cameraOnly = getIntent().getBooleanExtra(RvrRelayService.EXTRA_CAMERA_ONLY, false)
+        val cameraOnly = isCameraOnly()
         val perms = mutableListOf(Manifest.permission.CAMERA)
         if (!cameraOnly) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -114,7 +168,7 @@ class RelayActivity : AppCompatActivity() {
             perms += Manifest.permission.POST_NOTIFICATIONS
         }
         if (perms.all { checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED }) {
-            startRelayService()
+            ensureBluetoothThenStart()
         } else {
             permissionLauncher.launch(perms.toTypedArray())
         }
@@ -162,7 +216,7 @@ class RelayActivity : AppCompatActivity() {
         root.addView(controls)
 
         serverInput = EditText(this).apply {
-            hint = "Server URL (e.g. ws://192.168.2.20:8765)"
+            hint = "Server URL (e.g. ws://127.0.0.1:8765)"
             inputType = InputType.TYPE_TEXT_VARIATION_URI
             setText(prefs.getString("server_url", RvrRelayService.DEFAULT_URL))
             setTextColor(Color.parseColor("#e8e2d2"))
@@ -211,7 +265,34 @@ class RelayActivity : AppCompatActivity() {
         Button(this).apply { text = label; setOnClickListener { onClick(); resetIdleTimer() } }
 
     private fun startRelay() {
+        // If the relay is already running (e.g. BT was off, user enabled it and
+        // tapped Connect), just retry the BLE scan instead of a full restart.
+        val s = service
+        if (s != null && bound) {
+            ensureBluetoothThenStartOrRetry()
+            return
+        }
         requestPermissionsThenStart()
+    }
+
+    /**
+     * Like [ensureBluetoothThenStart] but if the foreground service is already
+     * running, retry the BLE scan instead of starting a new service instance.
+     * Used by the manual Connect button after the user enables Bluetooth.
+     */
+    private fun ensureBluetoothThenStartOrRetry() {
+        if (isCameraOnly() || bluetoothOn()) {
+            val s = service
+            if (s != null && bound) {
+                s.retryBleIfEnabled()
+            } else {
+                startRelayService()
+            }
+            return
+        }
+        btEnableForRetry = true
+        val enableIntent = Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)
+        btEnableLauncher.launch(enableIntent)
     }
 
     private fun requestPermissionsThenStart() {

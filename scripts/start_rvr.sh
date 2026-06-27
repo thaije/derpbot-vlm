@@ -81,13 +81,62 @@ tmux new -s panel -d "$VENV -m panel --agent-url ws://127.0.0.1:$DEBUG_BUS_PORT 
 
 echo ">>> Restarting Android phone app (adb reverse + relaunch)..."
 $VENV -c "
+import sys, os, subprocess, time
+sys.path.insert(0, '$ROOT')
 from rvr_bridge.drive_test import restart_app, _pick_device, _ensure_server_url
-import logging, sys
+import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
 d = _pick_device()
 if d is None:
     print('WARNING: No ADB device found — phone app not started.', file=sys.stderr)
     sys.exit(0)
+
+# --- APK staleness check (#28) -------------------------------------------
+# Compare the newest .kt mtime under android/app/src/main/kotlin/ against the
+# mtime of the APK installed on the phone. If source is newer, rebuild +
+# reinstall via deploy.sh so code changes (e.g. BT auto-enable) actually land
+# on the phone — start_rvr.sh previously only relaunched the existing APK.
+APK_REMOTE = '/data/app/com.derpbot.app*/base.apk'
+KT_ROOT = '$ROOT/android/app/src/main/kotlin'
+
+def newest_kt_mtime():
+    latest = 0
+    for root, _, files in os.walk(KT_ROOT):
+        for f in files:
+            if f.endswith('.kt'):
+                m = os.path.getmtime(os.path.join(root, f))
+                if m > latest:
+                    latest = m
+    return latest
+
+def installed_apk_mtime(device):
+    # Resolve the APK path via 'pm path', then stat it on the phone.
+    try:
+        paths = subprocess.check_output(
+            ['adb'] + (['-s', device] if device else []) + ['shell', 'pm', 'path', 'com.derpbot.app'],
+            text=True, timeout=10).strip().splitlines()
+        apk = next((p.split(':', 1)[1] for p in paths if p.startswith('package:')), None)
+        if not apk:
+            return 0.0
+        out = subprocess.check_output(
+            ['adb'] + (['-s', device] if device else []) + ['shell', 'stat', '-c', '%Y', apk],
+            text=True, timeout=10).strip()
+        return float(out) if out else 0.0
+    except Exception:
+        return 0.0
+
+src_mtime = newest_kt_mtime()
+apk_mtime = installed_apk_mtime(d)
+if src_mtime > apk_mtime and apk_mtime > 0:
+    print(f'>>> Kotlin source ({time.ctime(src_mtime)}) newer than installed APK ({time.ctime(apk_mtime)}); redeploying...')
+    rc = subprocess.call(['bash', '$ROOT/android/deploy.sh', 'ws://127.0.0.1:8765'])
+    if rc != 0:
+        print('WARNING: deploy.sh failed — continuing with the existing APK', file=sys.stderr)
+    # Re-pick device — deploy.sh may have reconnected ADB.
+    d = _pick_device() or d
+elif apk_mtime == 0:
+    print('>>> Could not determine installed APK mtime — skipping deploy. Run android/deploy.sh manually if the app is outdated.')
+
 # Prefer a WiFi device so the reverse tunnel survives USB unplug.
 _ensure_server_url(d, 'ws://127.0.0.1:8765')
 restart_app(d)
