@@ -68,6 +68,8 @@ class PhoneRelay:
         self.on_ble_state: Optional[Callable[[BleStateMessage], None]] = None
         self.on_battery: Optional[Callable[[BatteryMessage], None]] = None
         self.on_phone_battery: Optional[Callable[[PhoneBatteryMessage], None]] = None
+        self.on_phone_connect: Optional[Callable[[], None]] = None
+        self.on_phone_disconnect: Optional[Callable[[], None]] = None
 
         self._pending_frame_future: Optional[asyncio.Future] = None
         self._latest_imu: Optional[ImuMessage] = None
@@ -115,6 +117,8 @@ class PhoneRelay:
     async def _handler(self, websocket: websockets.asyncio.server.ServerConnection) -> None:
         logger.info("Phone connected from %s", websocket.remote_address)
         self._ws = websocket
+        if self.on_phone_connect:
+            self.on_phone_connect()
         try:
             async for raw in websocket:
                 try:
@@ -155,6 +159,8 @@ class PhoneRelay:
         finally:
             self._ws = None
             self._ble_state = "disconnected"
+            if self.on_phone_disconnect:
+                self.on_phone_disconnect()
 
     @staticmethod
     def _decode_frame(msg: FrameMessage) -> Optional[Image.Image]:

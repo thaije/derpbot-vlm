@@ -83,6 +83,8 @@ class RvrTransport(RobotTransport):
         self.relay.on_battery = self._on_battery
         self.relay.on_phone_battery = self._on_phone_battery
         self.relay.on_frame = self._on_frame
+        self.relay.on_phone_connect = self._on_phone_connect
+        self.relay.on_phone_disconnect = self._on_phone_disconnect
 
         # Battery state cache (updated by relay callbacks)
         self._rvr_battery: Optional[BatteryState] = None
@@ -329,6 +331,7 @@ class RvrTransport(RobotTransport):
         if hasattr(self, '_agent') and self._agent is not None:
             self._agent.on_ble_event({'state': msg.state})
             self._agent._emit_state()
+            self._agent._log_entry({"event": "ble_state", "state": msg.state})
 
     def _on_battery(self, msg) -> None:
         logger.info("RVR battery: %d%%", msg.pct)
@@ -341,6 +344,14 @@ class RvrTransport(RobotTransport):
         self._phone_battery_pct = msg.pct
         if hasattr(self, '_agent') and self._agent is not None:
             self._agent.on_phone_battery_event({'pct': msg.pct})
+
+    def _on_phone_connect(self) -> None:
+        if hasattr(self, '_agent') and self._agent is not None:
+            self._agent._log_entry({"event": "phone_connect"})
+
+    def _on_phone_disconnect(self) -> None:
+        if hasattr(self, '_agent') and self._agent is not None:
+            self._agent._log_entry({"event": "phone_disconnect"})
 
     def _on_frame(self, img: Image.Image) -> None:
         self._latest_frame = img

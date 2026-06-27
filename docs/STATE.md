@@ -199,7 +199,8 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **Create 3 firmware stops accepting `/cmd_vel` on bump** — the transport's `move_linear`/`rotate` check `_hazard_pending` and abort early so the agent's bump recovery can take over.
 
 ### Run artifacts (VLM frames + decision log)
-- **Per-run directory**: `runs/<YYYYMMDD_HHMMSS>/` (git-ignored). Created automatically by `BaseRealAgent.__init__` on every agent start. Contains `frames/` (VLM input JPEGs) + `decisions.jsonl` (one JSON line per decision/arrival/hazard event with epoch timestamp).
+- **Per-run directory**: `runs/<YYYYMMDD_HHMMSS>/` (git-ignored). Created automatically by `BaseRealAgent.__init__` on every agent start. Contains `frames/` (VLM input JPEGs) + `decisions.jsonl` (one JSON line per event with epoch timestamp `t`).
+- **`decisions.jsonl` events**: `agent_start` (target, model, run_dir), `agent_stop`, `decision` (vis, heading, turn_angle_deg, dist, loc, confirmed, reason, prompt, vlm_latency_ms, frame), `verifier` (confirmed, matches, mismatches, reason, latency_ms), `vlm_error` (stage=decision|verifier), `arrived`, `hazard` (kind, magnitude), `mode` (teleop bool), `toggle` (which, value), `set_target` (old, new, description), `estop`, `manual_query`, `ble_state` (state), `phone_connect`, `phone_disconnect`.
 - **`runs/_current`** is a symlink to the latest run dir. The panel proxy serves frames from `runs/_current/frames/` via `/frames/<name>` — no path update needed between runs.
 - **CLI overrides**: `--run-dir <path>` sets a custom run dir; `--log-file <path>` overrides the JSONL path (default: `<run_dir>/decisions.jsonl`).
 - **Console log**: `scripts/start_rvr.sh` tees agent stdout to `runs/rvr_console.log` for post-run inspection.

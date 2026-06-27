@@ -168,7 +168,12 @@ class BaseRealAgent:
 
         if self.config.log_file:
             self._log_fh = open(self.config.log_file, "a")
-            self._log_entry({"event": "agent_start", "target": self.config.target})
+            self._log_entry({
+                "event": "agent_start",
+                "target": self.config.target,
+                "model": self.config.model,
+                "run_dir": str(self.run_dir),
+            })
 
         logger.info("Waiting for %s connection...", self.transport.backend_name)
         while self._running and not self._is_connected():
@@ -262,6 +267,7 @@ class BaseRealAgent:
             latency_ms = (time.time() - t0) * 1000
             if decision is None:
                 logger.warning("VLM returned None; stopping for a cycle")
+                self._log_entry({"event": "vlm_error", "stage": "decision", "frame": frame_path})
                 await asyncio.sleep(self.config.vlm_interval_s)
                 continue
 
@@ -296,6 +302,14 @@ class BaseRealAgent:
                     logger.info("VERIFY: confirmed=%s | %s",
                                 verify.confirmed, verify.reason[:80])
                     self._emit_verifier(verify, v_latency_ms)
+                    self._log_entry({
+                        "event": "verifier",
+                        "confirmed": verify.confirmed,
+                        "matches": verify.matches,
+                        "mismatches": verify.mismatches,
+                        "reason": verify.reason,
+                        "latency_ms": v_latency_ms,
+                    })
                     if confirmed:
                         self._confirmed_count += 1
                         if decision.drive_distance_m <= self.config.arrive_dist_m:
@@ -304,15 +318,19 @@ class BaseRealAgent:
                             return
                 else:
                     logger.warning("Verifier returned None; treating as unconfirmed")
+                    self._log_entry({"event": "vlm_error", "stage": "verifier"})
 
             self._log_entry({
                 "event": "decision",
                 "vis": decision.target_visible,
                 "heading": decision.heading,
+                "turn_angle_deg": decision.turn_angle_deg,
                 "dist": decision.drive_distance_m,
                 "loc": decision.target_location,
                 "confirmed": confirmed,
-                "reason": decision.reason[:120],
+                "reason": decision.reason,
+                "prompt": prompt,
+                "vlm_latency_ms": latency_ms,
                 "frame": frame_path,
             })
 
@@ -367,6 +385,7 @@ class BaseRealAgent:
             self._teleop_lin = 0.0
             self._teleop_turn = 0.0
         self._teleop_active = active
+        self._log_entry({"event": "mode", "teleop": active})
         if not active:
             asyncio.ensure_future(self.transport.halt())
         self._emit_state()
@@ -445,6 +464,7 @@ class BaseRealAgent:
         self._teleop_lin = 0.0
         self._teleop_turn = 0.0
         await self.transport.halt()
+        self._log_entry({"event": "estop"})
         self._emit_state()
 
     async def manual_query(self) -> None:
@@ -453,6 +473,7 @@ class BaseRealAgent:
         if self._vlm_client is None:
             logger.warning("VLM client not ready; cannot run manual query")
             return
+        self._log_entry({"event": "manual_query"})
 
         await self.transport.wait_standstill()
         img = await self.transport.capture_frame()
@@ -470,6 +491,7 @@ class BaseRealAgent:
         latency_ms = (time.time() - t0) * 1000
         if decision is None:
             logger.warning("Manual query: VLM returned None")
+            self._log_entry({"event": "vlm_error", "stage": "decision", "manual": True})
             return
 
         logger.info("MANUAL VLM: vis=%s hdg=%s turn=%+d° dist=%.2f loc=%s | %s",
@@ -478,6 +500,19 @@ class BaseRealAgent:
                     decision.drive_distance_m, decision.target_location,
                     decision.reason[:80])
         self._emit_decision(decision, latency_ms, "", prompt)
+        self._log_entry({
+            "event": "decision",
+            "vis": decision.target_visible,
+            "heading": decision.heading,
+            "turn_angle_deg": decision.turn_angle_deg,
+            "dist": decision.drive_distance_m,
+            "loc": decision.target_location,
+            "reason": decision.reason,
+            "prompt": prompt,
+            "vlm_latency_ms": latency_ms,
+            "frame": frame_path,
+            "manual": True,
+        })
 
         if decision.target_visible and decision.target_location:
             t0 = time.time()
@@ -490,12 +525,24 @@ class BaseRealAgent:
                 self._emit_verifier(verify, v_latency_ms)
                 logger.info("MANUAL VERIFY: confirmed=%s | %s",
                             verify.confirmed, verify.reason[:80])
+                self._log_entry({
+                    "event": "verifier",
+                    "confirmed": verify.confirmed,
+                    "matches": verify.matches,
+                    "mismatches": verify.mismatches,
+                    "reason": verify.reason,
+                    "latency_ms": v_latency_ms,
+                    "manual": True,
+                })
 
     def set_target(self, target: str, description: str = "") -> None:
+        old = self.config.target
         self.config.target = target
         self.config.target_description = description
         self._confirmed_count = 0
         self._emit_state()
+        self._log_entry({"event": "set_target", "old": old, "new": target,
+                         "description": description})
 
     async def set_status(self, kind: str, **kw) -> None:
         await self.transport.set_status(kind, **kw)
@@ -512,6 +559,7 @@ class BaseRealAgent:
         elif which == "bump":
             self._bump_enabled = not self._bump_enabled if value is None else value
             new = self._bump_enabled
+            self._log_entry({"event": "toggle", "which": which, "value": new})
         elif which == "teleop":
             self.set_teleop(not self._teleop_active if value is None else value)
             new = self._teleop_active
