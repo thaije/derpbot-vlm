@@ -47,7 +47,8 @@ def main() -> None:
     parser.add_argument("--rotate-speed", type=int, default=0,
                         help="Autonomous rotate speed byte (0=firmware yaw-hold, >0=raw_motors pivot; default 0)")
     parser.add_argument("--bump-threshold", type=float, default=2.5, help="IMU bump detection threshold factor")
-    parser.add_argument("--log-file", default=None, help="JSONL log file path")
+    parser.add_argument("--log-file", default=None, help="JSONL log file path (default: <run_dir>/decisions.jsonl)")
+    parser.add_argument("--run-dir", default=None, help="Run output directory (default: runs/<timestamp>)")
     parser.add_argument("--debug-bus", type=int, default=None, metavar="PORT",
                         help="Start debug bus WS server on this port (for panel; #24)")
     parser.add_argument("--teleop-only", action="store_true", default=True,
@@ -85,6 +86,7 @@ def main() -> None:
         log_file=args.log_file,
         debug_bus_port=args.debug_bus,
         teleop_only=args.teleop_only,
+        run_dir=args.run_dir,
     )
 
     relay = PhoneRelay(host=config.ws_host, port=config.ws_port)

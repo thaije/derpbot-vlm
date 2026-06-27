@@ -36,7 +36,7 @@ from websockets.protocol import State as WsState
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
-_FRAME_DIR = Path("/tmp/derpbot/frames")
+_FRAME_DIR = Path(__file__).resolve().parent.parent / "runs" / "_current" / "frames"
 _FRAME_PREFIX = b"\x01"
 
 

@@ -30,7 +30,8 @@ from .transport import BatteryState, HazardEvent, RobotTransport
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_FRAME_DIR = Path("/tmp/derpbot/frames")
+_RUNS_DIR = _PROJECT_ROOT / "runs"
+_FRAME_DIR = _RUNS_DIR / "_current" / "frames"
 
 # Defaults — backends may override via their config dataclass.
 ARRIVE_DIST_M = 0.4
@@ -52,6 +53,7 @@ class BaseAgentConfig:
     log_file: Optional[str] = None
     debug_bus_port: Optional[int] = None
     teleop_only: bool = False
+    run_dir: Optional[str] = None
 
 
 class BaseRealAgent:
@@ -87,6 +89,32 @@ class BaseRealAgent:
         self._hazard_event: Optional[HazardEvent] = None
         self._debug_bus = None
         self._teleop_only = config.teleop_only
+
+        # Run directory: timestamped subdir under runs/.  VLM frames and the
+        # JSONL decision log go here.  Symlink runs/_current → this run so the
+        # panel proxy can serve the latest frames without a path update.
+        global _FRAME_DIR
+        if config.run_dir:
+            run_path = Path(config.run_dir)
+        else:
+            from datetime import datetime
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_path = _RUNS_DIR / stamp
+        run_path = run_path.resolve()
+        (run_path / "frames").mkdir(parents=True, exist_ok=True)
+        _FRAME_DIR = run_path / "frames"
+        self.run_dir = run_path
+        # Symlink runs/_current → this run (best-effort; ignore if it exists)
+        current_link = _RUNS_DIR / "_current"
+        try:
+            if current_link.is_symlink() or current_link.exists():
+                current_link.unlink()
+            current_link.symlink_to(run_path, target_is_directory=True)
+        except OSError:
+            pass  # not fatal — panel falls back to _FRAME_DIR directly
+        if not config.log_file:
+            config.log_file = str(run_path / "decisions.jsonl")
+        logger.info("Run dir: %s", run_path)
 
         # Heading: kept by the agent when the transport has no real heading
         # (RVR dead-reckoned byte counter).  None when the transport reports
@@ -523,8 +551,8 @@ class BaseRealAgent:
                 vis = "saw target" if d["vis"] else "no target"
                 lines.append(
                     f"  turn={d['turn']:+d}° drive={d['dist']:.1f}m ({vis}) — {d['reason']}")
-            lines.append("AVOID repeating the same turn pattern — you may be stuck in a")
-            lines.append("dead end. Try a DIFFERENT direction or drive distance to escape.")
+            lines.append("AVOID back and forth turn patterns — you may be stuck in a")
+            lines.append("dead end. Stick to turning in one direction when stuck, or try a different drive distance to escape.")
         lines.append("Reply JSON only.")
         return "\n".join(lines)
 
@@ -535,7 +563,7 @@ class BaseRealAgent:
             self.on_frame(img)
 
     def _save_frame(self, img: Image.Image, tag: str = "") -> str:
-        """Save a frame to /tmp/derpbot/frames/ for debugging.
+        """Save a frame to <run_dir>/frames/ for debugging.
 
         Returns the path so it can be logged alongside the VLM decision.
         """

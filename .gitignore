@@ -138,3 +138,6 @@ debug/
 
 # profiling results
 results/*settings.local.json
+
+# Run artifacts (VLM frames + decision logs)
+runs/

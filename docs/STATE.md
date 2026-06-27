@@ -198,7 +198,12 @@ Camera+LiDAR(front)+VisitedCells(memory) → VLM (cloud, ~1 s, 0.5 s in approach
 - **`/cmd_audio` QoS = RELIABLE** (Create 3 `ui_mgr` subscription is RELIABLE; mismatch silently drops messages). All sensor topics + `/cmd_lightring` = BEST_EFFORT.
 - **Create 3 firmware stops accepting `/cmd_vel` on bump** — the transport's `move_linear`/`rotate` check `_hazard_pending` and abort early so the agent's bump recovery can take over.
 
-### Command panel (#24)
+### Run artifacts (VLM frames + decision log)
+- **Per-run directory**: `runs/<YYYYMMDD_HHMMSS>/` (git-ignored). Created automatically by `BaseRealAgent.__init__` on every agent start. Contains `frames/` (VLM input JPEGs) + `decisions.jsonl` (one JSON line per decision/arrival/hazard event with epoch timestamp).
+- **`runs/_current`** is a symlink to the latest run dir. The panel proxy serves frames from `runs/_current/frames/` via `/frames/<name>` — no path update needed between runs.
+- **CLI overrides**: `--run-dir <path>` sets a custom run dir; `--log-file <path>` overrides the JSONL path (default: `<run_dir>/decisions.jsonl`).
+- **Console log**: `scripts/start_rvr.sh` tees agent stdout to `runs/rvr_console.log` for post-run inspection.
+- **Old runs are NOT auto-pruned** — delete manually when no longer needed.
 - **Separate process** (`python3.12 -m panel`): connects to agent's debug bus (WS `:8770`) and serves browsers (dual-port: WS on `bind_port`, HTTP on `bind_port+1`). websockets v16 doesn't reliably serve HTTP (transport aborted before flush) → stdlib `http.server` in a thread handles static files; WS port is injected into `index.html` as `window.__WS_PORT__`.
 - **`--debug-bus PORT`** on `rvr_bridge.__main__` and `create3_bridge.__main__` starts `DebugBus` (WS server in agent's asyncio loop). Default off — zero cost when absent. `--teleop-only` starts with autonomous loop paused (panel owns all movement); E-STOP (`manual_stop()`) zeroes velocities but does NOT exit teleop mode (only the `toggle {which:"teleop"}` command does).
 - **Wire protocol**: binary WS = JPEG frames (prefix `0x01`); JSON msgs: `hello` (with `backend` + `capabilities`), `frame_meta`, `state`, `decision`, `verifier`, `imu`, `bump` (with `kind`), `ble`, `battery` (bus→panel→browser); `teleop {x,y}`, `stop`, `manual_query`, `toggle`, `set_target`, `robot {cmd}`, `led {r,g,b}` (browser→panel→bus). Teleop is normalized `[-1,1]`; transport maps to backend-specific drive. Bump detector stays armed during teleop.
