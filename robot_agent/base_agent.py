@@ -173,6 +173,7 @@ class BaseRealAgent:
         self.on_phone_battery_event: Optional[Callable[[dict], None]] = None
         self.on_state_change: Optional[Callable[[dict], None]] = None
         self.on_confirm_request: Optional[Callable[[dict], None]] = None
+        self.on_scan_event: Optional[Callable[[dict], None]] = None
 
         # Wire transport hazard sink → agent
         self.transport.on_hazard = self._on_hazard
@@ -417,6 +418,14 @@ class BaseRealAgent:
                         dist, best_step + 1)
             self._log_entry({"event": "forced_drive", "dist": dist,
                              "reason": "post_scan", "scan_step": best_step})
+            if self.on_scan_event:
+                self.on_scan_event({
+                    "action": "forced_drive",
+                    "dist": dist,
+                    "scan_step": best_step + 1,
+                    "scan_total": SCAN_STEPS,
+                    "rotate_back_deg": -(steps_to_undo * SCAN_STEP_DEG) if steps_to_undo > 0 else 0,
+                })
             await self._execute_drive(dist, 0)
 
         return None  # caller continues normal loop after forced drive

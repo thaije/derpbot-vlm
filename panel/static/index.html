@@ -726,6 +726,12 @@ function handleMessage(msg) {
     case 'confirm_target':
       showConfirmDialog(msg);
       break;
+    case 'scan_event':
+      if (msg.action === 'forced_drive') {
+        const rotBack = msg.rotate_back_deg ? ` (rotated back ${msg.rotate_back_deg}°)` : '';
+        addMessage('msg-info', 'SCAN', `Scan complete — driving <b>${msg.dist}m</b> toward open path seen at step ${msg.scan_step}/${msg.scan_total}${rotBack}`);
+      }
+      break;
   }
 }
 

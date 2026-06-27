@@ -78,6 +78,7 @@ class DebugBus:
         self.agent.on_phone_battery_event = self._on_agent_phone_battery
         self.agent.on_state_change = self._on_agent_state
         self.agent.on_confirm_request = self._on_agent_confirm_request
+        self.agent.on_scan_event = self._on_agent_scan_event
 
     # ── Agent callback → broadcast ──────────────────────────────────────
 
@@ -134,6 +135,10 @@ class DebugBus:
 
     def _on_agent_confirm_request(self, data: dict) -> None:
         msg = {"type": "confirm_target", **data, "ts": time.time()}
+        asyncio.ensure_future(self._broadcast_json(msg))
+
+    def _on_agent_scan_event(self, data: dict) -> None:
+        msg = {"type": "scan_event", **data, "ts": time.time()}
         asyncio.ensure_future(self._broadcast_json(msg))
 
     # ── WS handler (panel → bus commands) ───────────────────────────────
