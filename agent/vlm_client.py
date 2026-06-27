@@ -417,7 +417,7 @@ class VLMClient:
         target_natural = (target_name or "the target").replace("_", " ")
         location_text = f" at the {location}" if location else ""
         user_prompt = (
-            f"Target: {target_name} (natural language: \"{target_natural}\")\n"
+            f"Target: {target_natural}\n"
             f"The detector flagged a possible target{location_text} in this image."
             " Confirm or reject.\n"
             "Be strict; reject vaguely similar shapes."

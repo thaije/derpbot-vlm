@@ -218,8 +218,7 @@ class AgentNode:
         target_obj = self._mission.get("target_object", "the target") if self._mission else "the target"
         target_desc = self._mission.get("target_description", "") if self._mission else ""
         # Underscored class names confuse the VLM ("pipe_sewer_floor" → harder
-        # to match than "pipe sewer floor"). Expose both so the model can fall
-        # back on whichever it understands.
+        # to match than "pipe sewer floor"). Use the natural-language form only.
         target_natural = target_obj.replace("_", " ") if isinstance(target_obj, str) else str(target_obj)
         clearance = self.safety.front_clearance_m()
         clearance_str = (
@@ -228,7 +227,7 @@ class AgentNode:
         x, y, yaw = self._get_odom()
         memory_summary = self.memory.render_prompt_summary(x, y, yaw)
         return (
-            f"Target: {target_obj}  (natural language: \"{target_natural}\")\n"
+            f"Target: {target_natural}\n"
             f"Description: {target_desc}\n"
             f"LiDAR front clearance: {clearance_str}\n"
             f"Memory (rays ahead, 0.5 m grid): {memory_summary}\n\n"
