@@ -368,9 +368,25 @@ class BaseRealAgent:
                         self._scanning = False
                         return None  # caller proceeds with the decision
 
+            # If this step sees an open path (dist > 0, turn == 0), drive
+            # immediately and end the scan — the robot found an open direction.
+            # Continuing the scan would rotate away from it, and a post-scan
+            # forced drive would go in the wrong direction.
+            if (decision.drive_distance_m > 0
+                    and decision.turn_angle_deg == 0
+                    and not decision.target_visible):
+                logger.info("SCAN: open path at step %d — driving %.1fm",
+                            step + 1, decision.drive_distance_m)
+                self._log_entry({"event": "scan_end",
+                                 "reason": "open_path", "step": step})
+                self._consecutive_turns = 0
+                self._scanning = False
+                self._scan_step = 0
+                await self._execute_drive(decision.drive_distance_m, 0)
+                return None  # no forced drive needed — already drove
+
             # Track the decision with the largest drive distance for a
-            # post-scan forced drive (the robot drives into the most open
-            # direction seen during the sweep).
+            # post-scan forced drive (fallback if no open path found).
             if decision.drive_distance_m > 0 and (
                 best_drive is None
                 or decision.drive_distance_m > best_drive["decision"].drive_distance_m
