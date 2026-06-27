@@ -40,6 +40,14 @@ BUMP_REVERSE_MS = 1500
 BUMP_TURN_DEG = 90
 TELEOP_FRAME_MIN_GAP_S = 0.15
 
+# Scan sweep — step-stop-shoot rotation to acquire full environmental context.
+SCAN_STEPS = 6              # 6 × 60° = 360°
+SCAN_STEP_DEG = 60
+SCAN_ROTATE_TIMEOUT_S = 10.0
+# Loop detection — after N consecutive turns without seeing the target,
+# trigger a scan sweep.
+LOOP_TURNS_TRIGGER = 3
+
 
 @dataclass
 class BaseAgentConfig:
@@ -135,6 +143,11 @@ class BaseRealAgent:
         # Capped — only the last N decisions are kept.
         self._decision_history: list[dict] = []
         self._decision_history_len: int = 8
+
+        # Loop detection: count consecutive turns without vis=True.
+        self._consecutive_turns: int = 0
+        self._scanning: bool = False
+        self._initial_scan_done: bool = False
 
         # Callbacks (set by DebugBus if --debug-bus is active; None otherwise).
         self.on_frame: Optional[Callable[[Image.Image], None]] = None
@@ -236,6 +249,112 @@ class BaseRealAgent:
         client.start()
         return client
 
+    # ── Scan sweep ───────────────────────────────────────────────────────
+
+    async def _scan_sweep(self, reason: str = "loop") -> Optional[dict]:
+        """360° step-stop-shoot scan: rotate SCAN_STEP_DEG, settle, capture,
+        VLM query at each of SCAN_STEPS positions.  Breaks early if the
+        target is spotted and confirmed.
+
+        Returns the last VLM decision dict if the scan completed without
+        finding the target (so the caller can use it for a forced drive),
+        or None if the scan was interrupted / target found.
+        """
+        self._scanning = True
+        self._log_entry({"event": "scan_start", "reason": reason,
+                         "steps": SCAN_STEPS, "step_deg": SCAN_STEP_DEG})
+        logger.info("SCAN: starting 360° sweep (%s)", reason)
+
+        loop = asyncio.get_event_loop()
+        last_decision = None
+
+        for step in range(SCAN_STEPS):
+            if not self._running or self._teleop_active:
+                break
+
+            await self.transport.wait_standstill()
+            img = await self.transport.capture_frame()
+            if img is None:
+                logger.warning("SCAN: frame capture failed at step %d", step)
+                continue
+
+            self._latest_frame = img
+            self._emit_frame(img)
+            frame_path = self._save_frame(img, tag=f"scan{step}")
+
+            prompt = self._build_prompt()
+            t0 = time.time()
+            decision = await loop.run_in_executor(
+                None, self._vlm_client.query, img, prompt)
+            latency_ms = (time.time() - t0) * 1000
+
+            if decision is None:
+                logger.warning("SCAN: VLM returned None at step %d", step)
+                self._log_entry({"event": "vlm_error", "stage": "scan",
+                                 "step": step, "frame": frame_path})
+                continue
+
+            logger.info("SCAN %d/%d: vis=%s turn=%+d° dist=%.1f loc=%s | %s",
+                        step + 1, SCAN_STEPS,
+                        decision.target_visible, decision.turn_angle_deg,
+                        decision.drive_distance_m, decision.target_location,
+                        decision.reason[:80])
+
+            self._emit_decision(decision, latency_ms, frame_path, prompt)
+            self._log_entry({
+                "event": "scan_decision", "step": step,
+                "vis": decision.target_visible,
+                "turn_angle_deg": decision.turn_angle_deg,
+                "dist": decision.drive_distance_m,
+                "loc": decision.target_location,
+                "reason": decision.reason,
+                "vlm_latency_ms": latency_ms,
+                "frame": frame_path,
+            })
+
+            # Verify if target spotted
+            if decision.target_visible and decision.target_location:
+                verify = await loop.run_in_executor(
+                    None, self._vlm_client.verify_candidate,
+                    img, self.config.target, decision.target_location)
+                if verify:
+                    v_latency_ms = 0  # approx
+                    self._emit_verifier(verify, v_latency_ms)
+                    self._log_entry({
+                        "event": "verifier",
+                        "confirmed": verify.confirmed,
+                        "matches": verify.matches,
+                        "mismatches": verify.mismatches,
+                        "reason": verify.reason,
+                        "scan_step": step,
+                    })
+                    if verify.confirmed:
+                        self._confirmed_count += 1
+                        logger.info("SCAN: target confirmed at step %d!", step)
+                        self._log_entry({"event": "scan_end",
+                                         "reason": "target_found",
+                                         "step": step})
+                        self._scanning = False
+                        return None  # caller proceeds with the decision
+
+            last_decision = {
+                "decision": decision,
+                "frame_path": frame_path,
+                "prompt": prompt,
+            }
+
+            # Rotate to next position (skip after last step)
+            if step < SCAN_STEPS - 1:
+                self._apply_heading_delta(SCAN_STEP_DEG)
+                await self.transport.rotate(SCAN_STEP_DEG,
+                                            timeout_s=SCAN_ROTATE_TIMEOUT_S)
+
+        self._consecutive_turns = 0
+        self._scanning = False
+        self._log_entry({"event": "scan_end", "reason": "complete"})
+        logger.info("SCAN: complete (no target found)")
+        return last_decision
+
     # ── Autonomous loop ──────────────────────────────────────────────────
 
     async def _loop(self) -> None:
@@ -245,6 +364,21 @@ class BaseRealAgent:
             if self._teleop_active:
                 await self._teleop_tick()
                 await asyncio.sleep(0.05)
+                continue
+
+            # Initial 360° scan sweep on first autonomous start — gives the
+            # VLM full environmental context before committing to a direction.
+            if not self._initial_scan_done:
+                self._initial_scan_done = True
+                result = await self._scan_sweep(reason="initial")
+                if result is not None:
+                    # No target found during scan — force a forward drive
+                    # using the last scan frame's decision.
+                    d = result["decision"]
+                    if d.drive_distance_m > 0:
+                        logger.info("SCAN: forcing drive %.1fm after scan",
+                                    d.drive_distance_m)
+                        await self._execute_drive(d.drive_distance_m, 0)
                 continue
 
             # Wait for the robot to stop moving before capturing (avoids
@@ -333,6 +467,29 @@ class BaseRealAgent:
                 "frame": frame_path,
             })
 
+            # Loop detection: count consecutive turns without vis=True.
+            # After LOOP_TURNS_TRIGGER, do a scan sweep + forced drive.
+            if decision.turn_angle_deg != 0 and not confirmed:
+                self._consecutive_turns += 1
+            elif decision.drive_distance_m > 0 or confirmed:
+                self._consecutive_turns = 0
+
+            if self._consecutive_turns >= LOOP_TURNS_TRIGGER:
+                logger.info("Loop detected: %d consecutive turns — triggering scan",
+                            self._consecutive_turns)
+                result = await self._scan_sweep(reason="loop")
+                if result is not None:
+                    d = result["decision"]
+                    if d.drive_distance_m > 0:
+                        logger.info("SCAN: forcing drive %.1fm after loop-break scan",
+                                    d.drive_distance_m)
+                        self._log_entry({"event": "forced_drive",
+                                         "dist": d.drive_distance_m,
+                                         "reason": "post_scan"})
+                        await self._execute_drive(d.drive_distance_m, 0)
+                await asyncio.sleep(self.config.vlm_interval_s)
+                continue
+
             self._apply_heading_delta(decision.turn_angle_deg)
             self._emit_state()
 
@@ -388,6 +545,9 @@ class BaseRealAgent:
         self._teleop_active = active
         self._log_entry({"event": "mode", "teleop": active})
         if not active:
+            # Switching to autonomous: reset loop counter so detection
+            # starts fresh (don't inherit teleop-era turn count).
+            self._consecutive_turns = 0
             asyncio.ensure_future(self.transport.halt())
         self._emit_state()
 
@@ -598,8 +758,14 @@ class BaseRealAgent:
             lines.append("Recent actions (oldest → newest):")
             for d in self._decision_history:
                 vis = "saw target" if d["vis"] else "no target"
-                lines.append(
-                    f"  turn={d['turn']:+d}° drive={d['dist']:.1f}m ({vis}) — {d['reason']}")
+                action = (f"turn={d['turn']:+d}°" if d["turn"] != 0
+                          else f"drive={d['dist']:.1f}m")
+                # Truncate reason to first sentence, max 50 chars
+                reason = d["reason"]
+                first_sentence = reason.split(".")[0].strip()
+                if len(first_sentence) > 50:
+                    first_sentence = first_sentence[:47] + "..."
+                lines.append(f"  {action} ({vis}) — {first_sentence}")
             lines.append("AVOID back and forth turn patterns — you may be stuck in a")
             lines.append("dead end. Stick to turning in one direction when stuck, or try a different drive distance to escape.")
         lines.append("Reply JSON only.")
@@ -668,6 +834,8 @@ class BaseRealAgent:
             "bump_enabled": self._bump_enabled,
             "confirmed_count": self._confirmed_count,
             "running": self._running,
+            "scanning": self._scanning,
+            "consecutive_turns": self._consecutive_turns,
             "vlm_ready": self._vlm_client is not None,
             "backend": self.transport.backend_name,
         }
