@@ -837,7 +837,7 @@ function updateDecision(msg) {
     distStr,
   ].filter(Boolean).join(' &nbsp;');
   const meta = msg.latency_ms ? `${msg.latency_ms.toFixed(0)}ms` : '';
-  const frameSrc = msg.frame ? msg.frame.replace(/^\/tmp\/derpbot\/frames\//, '/frames/') : '';
+  const frameSrc = msg.frame ? msg.frame.replace(/^.*\/frames\//, '/frames/') : '';
   const frameHtml = frameSrc ? `<img src="${escapeHtml(frameSrc)}" style="max-width:100%;border-radius:6px;margin-top:6px">` : '';
   const promptHtml = msg.prompt
     ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--text-dim);font-size:11px;opacity:0.7">prompt</summary><pre style="white-space:pre-wrap;color:var(--text-dim);font-size:10px;margin-top:4px;padding:6px;border-radius:4px;background:rgba(0,0,0,0.2)">${escapeHtml(msg.prompt)}</pre></details>`

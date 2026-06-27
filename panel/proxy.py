@@ -123,7 +123,7 @@ class PanelProxy:
                         self.end_headers()
                         self.wfile.write(body)
                         return
-                # Serve saved VLM frames from /tmp/derpbot/frames/ (#debug)
+                # Serve saved VLM frames from runs/_current/frames/
                 if self.path.startswith("/frames/"):
                     frame_name = self.path[len("/frames/"):]
                     frame_path = _FRAME_DIR / frame_name

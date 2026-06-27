@@ -314,8 +314,7 @@ class BaseRealAgent:
                         self._confirmed_count += 1
                         if decision.drive_distance_m <= self.config.arrive_dist_m:
                             await self._on_arrived()
-                            self._running = False
-                            return
+                            continue  # _on_arrived switched to teleop; loop continues
                 else:
                     logger.warning("Verifier returned None; treating as unconfirmed")
                     self._log_entry({"event": "vlm_error", "stage": "verifier"})
@@ -345,8 +344,10 @@ class BaseRealAgent:
         """Hook called when a confirmed detection is within arrive_dist."""
         await self.beep("found")
         await self.transport.halt()
-        logger.info("ARRIVED at '%s' (confirmed)", self.config.target)
+        logger.info("ARRIVED at '%s' (confirmed) — switching to teleop",
+                     self.config.target)
         self._log_entry({"event": "arrived", "target": self.config.target})
+        self.set_teleop(True)
 
     async def _execute_drive(self, distance_m: float, turn_angle_deg: int = 0) -> None:
         """Execute a drive commitment via the transport.
